@@ -1,6 +1,7 @@
 {
   "modelo": "TF-IDF (palavras 1-2 + caracteres 2-5) + Ridge",
   "tema_treino": "misto",
+  "divisao": "aleatoria",
   "alpha": 0.3,
   "atributos": 118910,
   "teste_tema_curto": {

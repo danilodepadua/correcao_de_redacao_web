@@ -11,12 +11,17 @@ viu no treino) e mede como a nota prevista reage. Há dois grupos de mudanças:
 Para não confundir o efeito com o corte de tokens, cada mudança só é medida nas
 redações em que o texto original e o alterado cabem inteiros em max_len.
 
-Uso:  python analise_vies.py [--model-dir ./saved_model]
+Uso (dentro de Back-End):  python -m experimentos.analise_vies [--model-dir saved_model]
 Saída: tabela no terminal e saved_model/analise_vies.json
 """
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):  # permite rodar também como "python experimentos/<script>.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import random
 import re
 import unicodedata
@@ -26,7 +31,9 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from train import MAX_LEN, MODEL_NAME, EnemDataset, EnemEssayEvaluator, load_splits
+from avaliador.caminhos import PASTA_MODELO  # noqa: E402
+from avaliador.dados import load_splits  # noqa: E402
+from avaliador.modelo import MAX_LEN, EnemDataset, carregar_modelo, ler_config  # noqa: E402
 
 NOTAS = np.array([0, 40, 80, 120, 160, 200])
 CONECTIVOS = ["Além disso, ", "Ademais, ", "Nesse sentido, ", "Outrossim, ", "Dessa forma, "]
@@ -120,19 +127,16 @@ def converter(p, cuts):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model-dir", default="./saved_model")
+    ap.add_argument("--model-dir", default=str(PASTA_MODELO))
     args = ap.parse_args()
 
-    cfg_path = os.path.join(args.model_dir, "config.json")
-    cfg = json.load(open(cfg_path, encoding="utf-8")) if os.path.exists(cfg_path) else {}
+    cfg = ler_config(args.model_dir)
     max_len = int(cfg.get("max_len", MAX_LEN))
     cuts = cfg.get("cuts") or [[20, 60, 100, 140, 180]] * 5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(os.path.join(args.model_dir, "tokenizer"))
-    model = EnemEssayEvaluator(MODEL_NAME).to(device)
-    model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
-                                     map_location=device, weights_only=True))
+    model = carregar_modelo(args.model_dir, device)
 
     s = load_splits(tema="curto")  # título curto, como no site
     temas = list(s["val"][0]) + list(s["test"][0])

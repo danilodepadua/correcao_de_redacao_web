@@ -1,31 +1,34 @@
+"""Treina o avaliador de redações (BERTimbau ajustado no Essay-BR).
+
+Padrão: 512 tokens, BERT inteiro, 4 épocas, tema misto e aumento de dados contra
+vieses (modelo v3). Grava em saved_model/ os pesos, o tokenizador, config.json e
+results.json. Depois, rode a calibração dos cortes (treino/calibrate.py).
+
+Uso (dentro de Back-End):  python -m treino.train [opções]   (veja --help)
+"""
 import argparse
-import ast
 import json
-import logging
 import os
 import random
+import sys
 import time
+from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import torch
-from sklearn.metrics import cohen_kappa_score
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
-from torch import nn
-from torch.optim import AdamW
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+if __package__ in (None, ""):  # permite rodar também como "python treino/train.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from perturbacoes import aumentar_contra_vies
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from torch import nn  # noqa: E402
+from torch.optim import AdamW  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup  # noqa: E402
 
-logger = logging.getLogger(__name__)
-
-MODEL_NAME = "neuralmind/bert-base-portuguese-cased"
-
-# Tamanho máximo padrão da sequência (tema + redação) em tokens (limite do BERT).
-# O valor usado em cada treino fica salvo em saved_model/config.json,
-# e a API (main.py) lê de lá para usar exatamente o mesmo na inferência.
-MAX_LEN = 512
+from avaliador.caminhos import PASTA_MODELO  # noqa: E402
+from avaliador.dados import TIPOS_DE_DIVISAO, TIPOS_DE_TEMA, load_splits  # noqa: E402
+from avaliador.modelo import MAX_LEN, MODEL_NAME, EnemDataset, EnemEssayEvaluator  # noqa: E402
+from avaliador.notas import post_process_scores, qwk  # noqa: E402
+from avaliador.perturbacoes import aumentar_contra_vies  # noqa: E402
 
 
 def format_duration(seconds: float) -> str:
@@ -46,78 +49,8 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-class EnemEssayEvaluator(nn.Module):
-    def __init__(self, model_name=MODEL_NAME, dropout_rate=0.2):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.regressor = nn.Linear(self.bert.config.hidden_size, 5)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        cls_output = outputs.last_hidden_state[:, 0, :]
-        return self.regressor(self.dropout(cls_output))
-
-
-class EnemDataset(Dataset):
-    def __init__(self, texts, themes, scores, tokenizer, max_len=MAX_LEN):
-        self.texts = texts
-        self.themes = themes
-        self.scores = scores
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        combined_text = f"Tema: {self.themes[idx]} [SEP] Redação: {self.texts[idx]}"
-        encoding = self.tokenizer(
-            combined_text,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_len,
-            return_tensors="pt",
-        )
-        item = {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-        }
-        if self.scores is not None:
-            # Escala normalizada [0, 1]
-            item["labels"] = torch.tensor(self.scores[idx] / 200.0, dtype=torch.float)
-        return item
-
-
-def post_process_scores(preds_array):
-    raw_scores = preds_array * 200.0
-    clipped = np.clip(raw_scores, 0, 200)
-    rounded = (np.round(clipped / 40.0) * 40).astype(int)
-    return rounded
-
-
-def extract_prompt_text(val):
-    if pd.isna(val):
-        return ""
-    s = str(val).strip()
-    # IDs 0 a 42 estão serializados como lista de parágrafos
-    if s.startswith("[") and s.endswith("]"):
-        try:
-            paragraphs = ast.literal_eval(s)
-            if isinstance(paragraphs, list) and paragraphs:
-                keywords = ("tema", "dissertação", "redija", "ponto de vista")
-                cmd = next(
-                    (p for p in paragraphs if any(k in p.lower() for k in keywords)),
-                    None,
-                )
-                s = cmd if cmd else " ".join(str(p) for p in paragraphs)
-        except (SyntaxError, ValueError) as exc:
-            logger.warning("Não foi possivel serializar o prompt: %s", exc)
-    # Normaliza espaços e limita a 300 caracteres para sobrar espaço para a redação
-    return " ".join(s.split())[:300]
-
-
 def evaluate(model, loader, criterion, device, use_amp=False):
+    """Perda e QWK por competência (arredondamento simples) num DataLoader."""
     model.eval()
     all_preds, all_targets = [], []
     total_loss = 0.0
@@ -141,92 +74,8 @@ def evaluate(model, loader, criterion, device, use_amp=False):
     y_pred_rounded = post_process_scores(preds_arr)
     y_true_rounded = np.round(targets_arr * 200.0).astype(int)
 
-    qwk_scores = [
-        cohen_kappa_score(
-            y_true_rounded[:, i], y_pred_rounded[:, i], weights="quadratic"
-        )
-        for i in range(5)
-    ]
+    qwk_scores = [qwk(y_true_rounded[:, i], y_pred_rounded[:, i]) for i in range(5)]
     return avg_loss, qwk_scores
-
-
-TIPOS_DE_TEMA = ("trecho", "curto", "vazio", "misto")
-TIPOS_DE_DIVISAO = ("aleatoria", "por_tema")
-
-
-def load_splits(seed: int = 42, tema: str = "trecho", divisao: str = "aleatoria"):
-    """Carrega o Essay-BR e devolve {"train"|"val"|"test": (temas, textos, notas)}.
-
-    Divisão fixa 80/10/10 (random_state=42), a mesma em todos os experimentos,
-    qualquer que seja o tipo de tema (só o texto do tema muda, não as redações).
-
-    tema:
-      "trecho" — até 300 caracteres do texto motivador da proposta (prompts.csv)
-      "curto"  — título curto do tema (temas_curtos.csv), como o usuário digita no site
-      "vazio"  — sem tema
-      "misto"  — sorteia, para cada redação, trecho ou título curto (50% cada)
-
-    divisao:
-      "aleatoria" — sorteia redações (80/10/10); os mesmos temas aparecem nos três conjuntos
-      "por_tema"  — sorteia temas: os temas da validação e do teste não aparecem no
-                    treino (cerca de 80/10/10 das redações), para medir o desempenho
-                    em temas inéditos
-    """
-    if divisao not in TIPOS_DE_DIVISAO:
-        raise ValueError(f"divisao deve ser uma de {TIPOS_DE_DIVISAO}")
-    if tema not in TIPOS_DE_TEMA:
-        raise ValueError(f"tema deve ser um de {TIPOS_DE_TEMA}")
-    # Carregamento e junção das redações (4570) com os temas (86)
-    df = pd.read_csv("essay-br.csv")
-    prompts_df = pd.read_csv("prompts.csv")
-
-    prompts_df["tema_prompt"] = prompts_df["description"].apply(extract_prompt_text)
-    df = df.merge(
-        prompts_df[["id", "tema_prompt"]], left_on="prompt", right_on="id", how="left"
-    )
-
-    # Conversão das colunas serializadas para texto contínuo e matriz (4570, 5)
-    X_texts = df["essay"].apply(lambda x: "\n".join(ast.literal_eval(x))).values
-    trechos = df["tema_prompt"].fillna("").astype(str).values
-    if tema == "trecho":
-        X_themes = trechos
-    elif tema == "vazio":
-        X_themes = np.array([""] * len(df), dtype=object)
-    else:
-        curtos_df = pd.read_csv("temas_curtos.csv").set_index("id")["tema_curto"]
-        curtos = df["prompt"].map(curtos_df).fillna("").astype(str).values
-        if tema == "curto":
-            X_themes = curtos
-        else:  # misto: sorteio fixo, para o treino ver os dois tipos de tema
-            usa_curto = np.random.default_rng(seed).random(len(df)) < 0.5
-            X_themes = np.where(usa_curto, curtos, trechos)
-    y = np.array(df["competence"].apply(ast.literal_eval).tolist(), dtype=np.float32)
-
-    if divisao == "por_tema":
-        # Sorteia temas, não redações: 20% dos temas saem do treino e se dividem
-        # entre validação e teste (mesma semente, divisão fixa)
-        grupos = df["prompt"].values
-        g1 = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=seed)
-        idx_tr, idx_tmp = next(g1.split(X_texts, groups=grupos))
-        g2 = GroupShuffleSplit(n_splits=1, test_size=0.50, random_state=seed)
-        sub_val, sub_te = next(g2.split(idx_tmp, groups=grupos[idx_tmp]))
-        idx_val, idx_te = idx_tmp[sub_val], idx_tmp[sub_te]
-        X_train_t, X_train_txt, y_train = X_themes[idx_tr], X_texts[idx_tr], y[idx_tr]
-        X_val_t, X_val_txt, y_val = X_themes[idx_val], X_texts[idx_val], y[idx_val]
-        X_test_t, X_test_txt, y_test = X_themes[idx_te], X_texts[idx_te], y[idx_te]
-    else:
-        # Divisão: 80% Treino, 10% Validação, 10% Teste (fixa, para comparar experimentos)
-        X_train_t, X_temp_t, X_train_txt, X_temp_txt, y_train, y_temp = train_test_split(
-            X_themes, X_texts, y, test_size=0.20, random_state=seed
-        )
-        X_val_t, X_test_t, X_val_txt, X_test_txt, y_val, y_test = train_test_split(
-            X_temp_t, X_temp_txt, y_temp, test_size=0.50, random_state=seed
-        )
-    return {
-        "train": (X_train_t, X_train_txt, y_train),
-        "val": (X_val_t, X_val_txt, y_val),
-        "test": (X_test_t, X_test_txt, y_test),
-    }
 
 
 def parse_args():
@@ -249,11 +98,11 @@ def parse_args():
                         "ou título curto, para o modelo funcionar com o título que o usuário digita")
     p.add_argument("--aumento-vies", type=float, default=0.5,
                    help="fração das redações de treino que ganham uma cópia alterada contra os vieses "
-                        "(perturbacoes.py); padrão 0.5 (modelo v3), 0 = desligado (modelo v2)")
+                        "(avaliador/perturbacoes.py); padrão 0.5 (modelo v3), 0 = desligado (modelo v2)")
     p.add_argument("--divisao", choices=TIPOS_DE_DIVISAO, default="aleatoria",
                    help="aleatoria (padrão) ou por_tema (temas de validação e teste fora do treino)")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--out", default="./saved_model", help="pasta onde o modelo é salvo")
+    p.add_argument("--out", default=str(PASTA_MODELO), help="pasta onde o modelo é salvo (padrão: saved_model)")
     p.add_argument("--no-test", action="store_true",
                    help="não avalia no conjunto de teste (use durante os experimentos)")
     return p.parse_args()

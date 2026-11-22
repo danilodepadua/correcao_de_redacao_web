@@ -7,19 +7,25 @@ condições do modelo principal:
 - cortes das notas calibrados na validação com título curto (como no site);
 - QWK no teste com título curto (uso real) e com trecho do texto motivador.
 
-Uso:  python baseline_tfidf.py [--tema-treino misto]
-Saída: tabela no terminal e baseline_tfidf.json
+Uso (dentro de Back-End):  python -m experimentos.baseline_tfidf [--tema-treino misto] [--divisao aleatoria]
+Saída: tabela no terminal e resultados/baseline_tfidf.json
 """
 import argparse
 import json
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):  # permite rodar também como "python experimentos/<script>.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 from scipy.sparse import hstack
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import Ridge
 
-from calibrate import DEFAULT_CUTS, apply_cuts, fit_cuts, qwk
-from train import TIPOS_DE_DIVISAO, TIPOS_DE_TEMA, load_splits
+from avaliador.caminhos import PASTA_RESULTADOS  # noqa: E402
+from avaliador.dados import TIPOS_DE_DIVISAO, TIPOS_DE_TEMA, load_splits  # noqa: E402
+from avaliador.notas import DEFAULT_CUTS, apply_cuts, fit_cuts, qwk  # noqa: E402
 
 
 def juntar(parte):
@@ -36,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tema-treino", choices=TIPOS_DE_TEMA, default="misto")
     ap.add_argument("--divisao", choices=TIPOS_DE_DIVISAO, default="aleatoria")
-    ap.add_argument("--saida", default="baseline_tfidf.json")
+    ap.add_argument("--saida", default=str(PASTA_RESULTADOS / "baseline_tfidf.json"))
     args = ap.parse_args()
 
     treino = load_splits(tema=args.tema_treino, divisao=args.divisao)

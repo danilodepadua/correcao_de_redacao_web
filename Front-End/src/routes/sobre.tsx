@@ -31,7 +31,7 @@ const PASSOS = [
 ];
 
 /**
- * Experimento de viés (Back-End/analise_vies.py) em 914 redações fora do treino:
+ * Experimento de viés (Back-End/experimentos/analise_vies.py) em 914 redações fora do treino:
  * variação média da nota (0–1000) antes (v2) e depois (v3) do treino contra vieses.
  */
 const VIESES = [

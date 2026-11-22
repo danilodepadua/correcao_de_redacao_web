@@ -5,28 +5,34 @@ motivador da proposta; no site, o usuário digita um título curto. Este script
 avalia o mesmo modelo com cada tipo de tema (trecho, título curto, vazio),
 usando os cortes calibrados de saved_model/config.json.
 
-Uso:  python avaliar_tema.py [--model-dir ./saved_model]
+Uso (dentro de Back-End):  python -m experimentos.avaliar_tema [--model-dir saved_model]
 """
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):  # permite rodar também como "python experimentos/<script>.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from calibrate import DEFAULT_CUTS, apply_cuts, predict, qwk
-from train import MAX_LEN, MODEL_NAME, EnemDataset, EnemEssayEvaluator, load_splits
+from avaliador.caminhos import PASTA_MODELO  # noqa: E402
+from avaliador.dados import load_splits  # noqa: E402
+from avaliador.modelo import MAX_LEN, EnemDataset, carregar_modelo, ler_config, predict  # noqa: E402
+from avaliador.notas import DEFAULT_CUTS, apply_cuts, qwk  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model-dir", default="./saved_model")
+    ap.add_argument("--model-dir", default=str(PASTA_MODELO))
     args = ap.parse_args()
 
-    cfg_path = os.path.join(args.model_dir, "config.json")
-    cfg = json.load(open(cfg_path, encoding="utf-8")) if os.path.exists(cfg_path) else {}
+    cfg = ler_config(args.model_dir)
     max_len = int(cfg.get("max_len", MAX_LEN))
     divisao = cfg.get("divisao", "aleatoria")  # a mesma usada no treino
     print(f"Divisão dos dados: {divisao}")
@@ -34,9 +40,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(os.path.join(args.model_dir, "tokenizer"))
-    model = EnemEssayEvaluator(MODEL_NAME).to(device)
-    model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
-                                     map_location=device, weights_only=True))
+    model = carregar_modelo(args.model_dir, device)
 
     resultados = {}
     for tema in ("trecho", "curto", "vazio"):

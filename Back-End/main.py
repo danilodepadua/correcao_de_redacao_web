@@ -17,25 +17,17 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel
-from torch import nn
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer
+
+from avaliador.caminhos import PASTA_BACKEND, PASTA_MODELO
+from avaliador.modelo import EnemEssayEvaluator
 
 # Carrega variáveis do arquivo .env (ex.: GEMINI_API_KEY), se existir
-load_dotenv()
+load_dotenv(PASTA_BACKEND / ".env")
 
 
-# Arquitetura do Modelo
-class EnemEssayEvaluator(nn.Module):
-    def __init__(self, model_name="neuralmind/bert-base-portuguese-cased"):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name)
-        self.dropout = nn.Dropout(0.2)
-        self.regressor = nn.Linear(self.bert.config.hidden_size, 5)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        cls_output = outputs.last_hidden_state[:, 0, :]
-        return self.regressor(self.dropout(cls_output))
+# A arquitetura do modelo (EnemEssayEvaluator) fica em avaliador/modelo.py,
+# a mesma usada no treino.
 
 
 # Schemas de Entrada e Saída
@@ -112,9 +104,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global MODEL, TOKENIZER, MAX_LEN, CUTS
-    MODEL_PATH = "./saved_model/model_weights.pt"
-    TOKENIZER_PATH = "./saved_model/tokenizer"
-    CONFIG_PATH = "./saved_model/config.json"
+    MODEL_PATH = PASTA_MODELO / "model_weights.pt"
+    TOKENIZER_PATH = PASTA_MODELO / "tokenizer"
+    CONFIG_PATH = PASTA_MODELO / "config.json"
 
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(

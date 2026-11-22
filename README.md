@@ -39,16 +39,16 @@ Usamos o **Essay-BR** (https://github.com/rafaelanchieta/essay), um conjunto pú
 | Item | Valor |
 |---|---|
 | Redações | 4.570 |
-| Temas | 86 (enunciados em `Back-End/prompts.csv`) |
+| Temas | 86 (enunciados em `Back-End/dados/prompts.csv`) |
 | Rótulos por redação | 5 notas (C1 a C5), cada uma em {0, 40, 80, 120, 160, 200} |
 | Nota final | média 614, mediana 600, de 0 a 1000 |
 | Tamanho das redações | média de 289 palavras (377 tokens do BERTimbau) |
 
 Arquivos usados:
 
-- `Back-End/essay-br.csv`: colunas `prompt` (id do tema), `title`, `essay` (lista de parágrafos), `competence` (as 5 notas) e `score` (nota final).
-- `Back-End/prompts.csv`: colunas `id` e `description` (texto da proposta de cada tema).
-- `Back-End/temas_curtos.csv` (criado pela equipe): um título curto para cada um dos 86 temas, como o usuário digita no site ("Desafios para a superação do analfabetismo funcional no Brasil"). O Essay-BR só traz o texto motivador, então os títulos foram gerados com o Gemini a partir do texto de cada proposta (`gerar_temas_curtos.py`).
+- `Back-End/dados/essay-br.csv`: colunas `prompt` (id do tema), `title`, `essay` (lista de parágrafos), `competence` (as 5 notas) e `score` (nota final).
+- `Back-End/dados/prompts.csv`: colunas `id` e `description` (texto da proposta de cada tema).
+- `Back-End/dados/temas_curtos.csv` (criado pela equipe): um título curto para cada um dos 86 temas, como o usuário digita no site ("Desafios para a superação do analfabetismo funcional no Brasil"). O Essay-BR só traz o texto motivador, então os títulos foram gerados com o Gemini a partir do texto de cada proposta (`experimentos/gerar_temas_curtos.py`).
 
 As notas se concentram em 120 e 160 em todas as competências. Notas 0 e 200 são raras: em C1, por exemplo, só 97 redações têm 0 e 122 têm 200. Esse desbalanceamento faz o modelo tender a prever notas intermediárias.
 
@@ -60,7 +60,7 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
 
 - **Base:** `neuralmind/bert-base-portuguese-cased` (BERTimbau Base, 12 camadas), um BERT pré-treinado em português.
 - **Entrada:** `"Tema: <tema> [SEP] Redação: <texto>"`, cortada em 512 tokens (`MAX_LEN`, o limite do BERT).
-- **Tema no treino ("tema misto"):** para cada redação, sorteia-se um de dois formatos de tema, com 50% de chance cada: até 300 caracteres do texto motivador da proposta ou o título curto de `temas_curtos.csv`. Assim o modelo funciona com o título que o usuário digita no site (veja "Correção do tema" nos resultados).
+- **Tema no treino ("tema misto"):** para cada redação, sorteia-se um de dois formatos de tema, com 50% de chance cada: até 300 caracteres do texto motivador da proposta ou o título curto de `dados/temas_curtos.csv`. Assim o modelo funciona com o título que o usuário digita no site (veja "Correção do tema" nos resultados).
 - **Cabeça:** dropout de 0,2 e uma camada linear de 768 para 5 saídas sobre o token `[CLS]`.
 - **Alvo:** as 5 notas divididas por 200 (escala de 0 a 1). Na saída, as previsões voltam para a escala de 0 a 200 e são convertidas em 0, 40, …, 200 por cortes calibrados (veja abaixo).
 - **Treino:**
@@ -69,13 +69,13 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
   - a taxa de aprendizado sobe nos primeiros 10% dos passos e depois cai de forma linear;
   - usa precisão mista bf16 na GPU;
   - é salvo o checkpoint com o maior QWK de validação;
-  - **aumento de dados contra vieses** (`perturbacoes.py`, modelo v3): metade das redações de treino ganha uma cópia alterada com nota que não sobe, para o modelo parar de premiar características superficiais (veja "Treino contra os vieses").
-- **Calibração dos cortes** (`calibrate.py`):
+  - **aumento de dados contra vieses** (`avaliador/perturbacoes.py`, modelo v3): metade das redações de treino ganha uma cópia alterada com nota que não sobe, para o modelo parar de premiar características superficiais (veja "Treino contra os vieses").
+- **Calibração dos cortes** (`treino/calibrate.py`):
   - o arredondamento simples (múltiplo de 40 mais próximo) concentra as notas no meio;
   - depois do treino, os 5 cortes de cada competência são ajustados no conjunto de **validação**, com título curto como tema (a condição do site), para maximizar o QWK;
   - os cortes ficam em `saved_model/config.json`, junto com o `max_len`, e a API lê os dois desse arquivo.
 - **Métrica:** QWK (*Quadratic Weighted Kappa*), a métrica padrão de correção automática de redações. Ela mede a concordância com as notas humanas e pune mais os erros grandes. Vale 1 para concordância perfeita e 0 para concordância ao acaso.
-- **Código:** `Back-End/train.py` (treino; todos os hiperparâmetros podem ser passados por linha de comando, veja `python train.py --help`) e `Back-End/calibrate.py` (calibração).
+- **Código:** `Back-End/treino/train.py` (treino; todos os hiperparâmetros podem ser passados por linha de comando, veja `python -m treino.train --help`) e `Back-End/treino/calibrate.py` (calibração).
 
 ### 2. Apontamentos e reescrita: Gemini (modelo pronto, via API)
 
@@ -154,7 +154,7 @@ As notas também ficaram mais espalhadas: um texto sem sentido ("palavra" repeti
 
 ### Correção do tema (modelo v2)
 
-No treino do v1, o "tema" era sempre um trecho do texto motivador da proposta (muitas vezes nem é o tema, e sim o começo do texto de apoio). No site, o usuário digita um título curto. Medimos o efeito dessa diferença no conjunto de teste (`avaliar_tema.py`) e treinamos de novo com o **tema misto** (metade trecho, metade título curto), com os cortes calibrados usando título curto:
+No treino do v1, o "tema" era sempre um trecho do texto motivador da proposta (muitas vezes nem é o tema, e sim o começo do texto de apoio). No site, o usuário digita um título curto. Medimos o efeito dessa diferença no conjunto de teste (`experimentos/avaliar_tema.py`) e treinamos de novo com o **tema misto** (metade trecho, metade título curto), com os cortes calibrados usando título curto:
 
 | Tema na entrada (teste) | v1 (só trecho) | **v2 (tema misto)** |
 |---|---|---|
@@ -175,7 +175,7 @@ O treino do v2 levou cerca de 11 minutos, e o melhor checkpoint foi o da época 
 
 ### Comparação com um modelo clássico (TF-IDF + regressão linear)
 
-Para medir o ganho da rede neural, treinamos um modelo de referência clássico (`baseline_tfidf.py`) nas mesmas condições: mesma divisão, tema misto no treino, regularização escolhida pela validação e cortes calibrados com título curto. Ele usa TF-IDF de palavras (1 e 2 palavras seguidas) e de pedaços de 2 a 5 caracteres (118.910 atributos), com regressão Ridge.
+Para medir o ganho da rede neural, treinamos um modelo de referência clássico (`experimentos/baseline_tfidf.py`) nas mesmas condições: mesma divisão, tema misto no treino, regularização escolhida pela validação e cortes calibrados com título curto. Ele usa TF-IDF de palavras (1 e 2 palavras seguidas) e de pedaços de 2 a 5 caracteres (118.910 atributos), com regressão Ridge.
 
 | Modelo (teste, título curto, cortes calibrados) | C1 | C2 | C3 | C4 | C5 | Média |
 |---|---|---|---|---|---|---|
@@ -199,7 +199,7 @@ QWK do BERTimbau com temas inéditos, por competência: C1 0,433 · C2 0,598 · 
 - **O BERTimbau generaliza muito melhor.** O TF-IDF perde um terço do desempenho quando o tema é novo, porque depende muito das palavras típicas de cada tema. O BERTimbau perde pouco, e a vantagem dele sobre o modelo clássico sobe de +0,06 para **+0,18**. É o principal argumento a favor da rede neural neste problema.
 - **Expectativa realista no uso:** com um tema fora do Essay-BR, o QWK esperado é de cerca de 0,52, e não 0,57.
 - **Menos dependência do tema:** sem tema, esse modelo cai só de 0,52 para 0,48, contra 0,57 → 0,43 no modelo treinado com a divisão aleatória. Quando o tema não pode ser decorado, o modelo aprende mais com o texto.
-- **Ressalva:** é uma única divisão, com 9 temas no teste, e o resultado varia com os temas sorteados (na validação, com outros 9 temas, o QWK foi 0,49). Os números estão em `Back-End/resultados_tema_inedito.json`.
+- **Ressalva:** é uma única divisão, com 9 temas no teste, e o resultado varia com os temas sorteados (na validação, com outros 9 temas, o QWK foi 0,49). Os números estão em `Back-End/resultados/resultados_tema_inedito.json`.
 
 Esta avaliação usou a configuração do v2 (sem o aumento contra vieses). O modelo publicado no site é treinado com a divisão aleatória, porque assim ele vê mais temas no treino.
 
@@ -207,7 +207,7 @@ Nas 3 redações reais da página de exemplos (notas humanas 960, 520 e 240, esc
 
 ### Treino contra os vieses (modelo final, v3)
 
-A análise de viés (próxima seção) mostrou que o v2 premia texto repetido e citações genéricas e quase não percebe frases embaralhadas. Para corrigir isso no treino, o v3 usa **aumento de dados** (`perturbacoes.py`, `python train.py --aumento-vies 0.5`). Metade das redações de treino ganha uma cópia alterada, com uma nota que não sobe, seguindo a grade do ENEM:
+A análise de viés (próxima seção) mostrou que o v2 premia texto repetido e citações genéricas e quase não percebe frases embaralhadas. Para corrigir isso no treino, o v3 usa **aumento de dados** (`avaliador/perturbacoes.py`, `python -m treino.train --aumento-vies 0.5`). Metade das redações de treino ganha uma cópia alterada, com uma nota que não sobe, seguindo a grade do ENEM:
 
 | Mudança na cópia de treino | Nota da cópia | Justificativa |
 |---|---|---|
@@ -228,7 +228,7 @@ O v3 custa −0,014 de QWK médio, o que está na faixa de ruído de uma única 
 
 ## Análise de viés: o que engana o modelo
 
-Um dos objetivos é reconhecer o que realmente eleva o nível de uma redação sem cair no viés do modelo. Para isso, o script `Back-End/analise_vies.py` aplica mudanças controladas às 914 redações de validação e teste, com título curto como tema (como no site), e mede como a nota prevista reage, antes (v2) e depois (v3) do treino contra os vieses. Cada mudança só é medida nas redações em que o texto alterado ainda cabe inteiro em 512 tokens, para não confundir com o corte.
+Um dos objetivos é reconhecer o que realmente eleva o nível de uma redação sem cair no viés do modelo. Para isso, o script `Back-End/experimentos/analise_vies.py` aplica mudanças controladas às 914 redações de validação e teste, com título curto como tema (como no site), e mede como a nota prevista reage, antes (v2) e depois (v3) do treino contra os vieses. Cada mudança só é medida nas redações em que o texto alterado ainda cabe inteiro em 512 tokens, para não confundir com o corte.
 
 | Mudança no texto | Tipo | No treino do v3? | v2: Δ nota | v2: nota subiu | **v3: Δ nota** | **v3: nota subiu** |
 |---|---|---|---|---|---|---|
@@ -252,7 +252,7 @@ O que isso mostra:
 
 Como o site lida com o que sobra: as verificações por regras e os apontamentos do Gemini não dependem da nota da rede. As instruções do Gemini proíbem acrescentar expressões só porque "dão nota". A página "O modelo" mostra a tabela antes e depois ao usuário.
 
-Para refazer a análise: `python analise_vies.py` (cerca de 1 minuto numa GPU; grava `saved_model/analise_vies.json`). Para o v2: `python analise_vies.py --model-dir <pasta do v2>`.
+Para refazer a análise: `python -m experimentos.analise_vies` (cerca de 1 minuto numa GPU; grava `saved_model/analise_vies.json`). Para o v2: `python -m experimentos.analise_vies --model-dir <pasta do v2>`.
 
 ## Funcionalidades do site
 
@@ -316,11 +316,11 @@ Os pesos (`Back-End/saved_model/`) não ficam no git por serem grandes. O modelo
 Para **treinar do zero** em vez de baixar (cerca de 12 min numa GPU):
 
 ```
-python train.py       # treina e gera saved_model/ (tema misto e aumento contra vieses, padrão; ~16 min)
-python calibrate.py   # ajusta os cortes das notas na validação (título curto, padrão)
+python -m treino.train       # treina e gera saved_model/ (tema misto e aumento contra vieses, padrão; ~16 min)
+python -m treino.calibrate   # ajusta os cortes das notas na validação (título curto, padrão)
 ```
 
-Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`. Para medir o desempenho em temas inéditos: `python train.py --divisao por_tema --out runs/tema_inedito`, depois `python calibrate.py --model-dir runs/tema_inedito` e `python avaliar_tema.py --model-dir runs/tema_inedito` (os dois leem a divisão do `config.json`), e `python baseline_tfidf.py --divisao por_tema` para o modelo clássico.
+Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python -m treino.train --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`. Para medir o desempenho em temas inéditos: `python -m treino.train --divisao por_tema --out runs/tema_inedito`, depois `python -m treino.calibrate --model-dir runs/tema_inedito` e `python -m experimentos.avaliar_tema --model-dir runs/tema_inedito` (os dois leem a divisão do `config.json`), e `python -m experimentos.baseline_tfidf --divisao por_tema` para o modelo clássico.
 
 ### Reescrita com o Gemini
 
@@ -348,7 +348,7 @@ npm test          # testes das regras do site
 - **Notas ainda puxadas para o meio:** a calibração dos cortes melhorou isso, mas o modelo ainda é treinado com MSE em dados com poucas notas 0 e 200.
 - **Temas inéditos rendem menos:** os números principais usam a divisão aleatória, em que os temas do teste também estão no treino. Com temas inéditos, o QWK do BERTimbau cai de 0,571 para 0,520 (medido numa única divisão, com 9 temas no teste).
 - **Dependência do tema:** sem tema, o QWK do modelo do site cai de 0,56 para 0,43. Ele usa o tema em parte como atalho (provavelmente uma "nota média por tema").
-- **Títulos curtos gerados por IA:** os 86 títulos de `temas_curtos.csv` foram gerados pelo Gemini e não foram revisados um a um por pessoas.
+- **Títulos curtos gerados por IA:** os 86 títulos de `dados/temas_curtos.csv` foram gerados pelo Gemini e não foram revisados um a um por pessoas.
 - **Uma rodada por experimento:** cada configuração foi treinada com uma única semente, então diferenças pequenas entre experimentos podem ser ruído.
 - **Vieses restantes:** o treino contra vieses (v3) corrige os tipos de manipulação ensinados, mas não se estende sozinho a outros (conectivos inseridos ainda ajudam um pouco). As notas das cópias alteradas são heurísticas da equipe, baseadas na grade, e custaram um pouco de concordância na C3 e na C4.
 - **Correções embutidas no dataset:** em parte das redações, as correções do corretor humano aparecem misturadas ao texto, logo depois do erro (ex.: "o brasil Brasil", "substancias substâncias"). Uma busca simples (palavra seguida dela mesma com outro acento ou maiúscula) encontrou 62 redações (1,4%) com 3 ou mais casos, concentradas nos temas 0 a 12, 20 e 42. O modelo pode estar aprendendo com o texto já corrigido.
@@ -370,24 +370,37 @@ npm test          # testes das regras do site
 
 ```
 Back-End/
-  train.py            treino e avaliação do BERTimbau
-  calibrate.py        calibração dos cortes das notas
-  baseline_tfidf.py   modelo de referência clássico (TF-IDF + Ridge)
-  avaliar_tema.py     QWK do modelo com cada tipo de tema (trecho, curto, vazio)
-  gerar_temas_curtos.py  gera temas_curtos.csv com o Gemini
-  temas_curtos.csv    título curto de cada um dos 86 temas
-  resultados_tema_inedito.json  resultados com a divisão por tema
-  baixar_modelo.py    baixa o modelo treinado da Release do GitHub
-  analise_vies.py     experimento de viés (mudanças controladas no texto)
-  perturbacoes.py     cópias alteradas para o treino contra vieses
-  main.py             API (avaliação e reescrita)
-  essay-br.csv        redações e notas (Essay-BR)
-  prompts.csv         textos dos temas
-  requirements.txt    dependências Python
-  .env.example        modelo de configuração do Gemini
+  main.py               API (avaliação, apontamentos e reescrita)   → python main.py
+  baixar_modelo.py      baixa o modelo treinado da Release           → python baixar_modelo.py
+  requirements.txt      dependências Python
+  .env.example          modelo de configuração do Gemini
+  avaliador/            código compartilhado (pacote Python)
+    caminhos.py         onde ficam dados, modelo e resultados
+    modelo.py           arquitetura (BERTimbau + regressão), dataset e predição
+    dados.py            leitura do Essay-BR e divisões (aleatória ou por tema)
+    notas.py            conversão em notas 0–200, calibração dos cortes e QWK
+    perturbacoes.py     cópias alteradas para o treino contra vieses
+  treino/
+    train.py            treino do avaliador                          → python -m treino.train
+    calibrate.py        calibração dos cortes na validação           → python -m treino.calibrate
+  experimentos/
+    baseline_tfidf.py   modelo clássico de referência (TF-IDF + Ridge) → python -m experimentos.baseline_tfidf
+    avaliar_tema.py     QWK com cada tipo de tema (trecho, curto, vazio) → python -m experimentos.avaliar_tema
+    analise_vies.py     experimento de viés (mudanças controladas)   → python -m experimentos.analise_vies
+    gerar_temas_curtos.py  gera dados/temas_curtos.csv com o Gemini  → python -m experimentos.gerar_temas_curtos
+  dados/
+    essay-br.csv        redações e notas (Essay-BR)
+    prompts.csv         textos das propostas
+    temas_curtos.csv    título curto de cada um dos 86 temas
+  resultados/
+    baseline_tfidf.json            resultados do modelo clássico
+    resultados_tema_inedito.json   resultados com a divisão por tema
+  saved_model/          modelo treinado (fora do git; baixado ou gerado pelo treino)
 Front-End/
-  src/routes/         páginas (Corrigir, Exemplos, Dicas, O modelo)
-  src/components/nota componentes da correção (notas, redação anotada, reescrita)
-  src/lib/            cliente da API, regras de verificação do texto
-  src/data/           redações de exemplo
+  src/routes/           páginas (Corrigir, Exemplos, Dicas, O modelo)
+  src/components/nota/  componentes da correção (notas, redação anotada, trechos, reescrita)
+  src/lib/              cliente da API, regras de verificação do texto
+  src/data/             redações de exemplo
 ```
+
+Os comandos são rodados de dentro de `Back-End`. Os scripts de `treino/` e `experimentos/` também funcionam se chamados direto pelo caminho (por exemplo, `python treino/train.py`), e os caminhos de dados e do modelo não dependem da pasta de onde são rodados.

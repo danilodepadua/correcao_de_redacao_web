@@ -6,89 +6,43 @@ aparecem. Este script ajusta os 5 cortes de cada competência no conjunto de
 VALIDAÇÃO para maximizar o QWK e grava o resultado em saved_model/config.json,
 que a API usa na inferência. O conjunto de teste é usado só para medir o efeito.
 
-Uso:  python calibrate.py [--model-dir ./saved_model]
+Uso (dentro de Back-End):  python -m treino.calibrate [--model-dir saved_model] [--tema curto]
 """
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
 
-import numpy as np
-import torch
-from sklearn.metrics import cohen_kappa_score
-from torch.utils.data import DataLoader
+if __package__ in (None, ""):  # permite rodar também como "python treino/calibrate.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from train import (
-    MAX_LEN,
-    MODEL_NAME,
-    EnemDataset,
-    EnemEssayEvaluator,
-    load_splits,
-)
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from transformers import AutoTokenizer  # noqa: E402
 
-DEFAULT_CUTS = [20.0, 60.0, 100.0, 140.0, 180.0]
-NOTAS = np.array([0, 40, 80, 120, 160, 200])
-
-
-def apply_cuts(preds_0_200: np.ndarray, cuts) -> np.ndarray:
-    """Converte previsões contínuas (escala 0–200) em notas, dados 5 cortes crescentes."""
-    return NOTAS[np.searchsorted(np.asarray(cuts), preds_0_200, side="right")]
-
-
-def qwk(y_true, y_pred):
-    return cohen_kappa_score(y_true, y_pred, weights="quadratic")
-
-
-def fit_cuts(preds: np.ndarray, targets: np.ndarray, rounds: int = 3) -> list:
-    """Busca coordenada a coordenada: ajusta um corte por vez mantendo a ordem."""
-    cuts = list(DEFAULT_CUTS)
-    best = qwk(targets, apply_cuts(preds, cuts))
-    for _ in range(rounds):
-        for i in range(5):
-            lo = cuts[i - 1] + 1 if i > 0 else -40.0
-            hi = cuts[i + 1] - 1 if i < 4 else 240.0
-            for c in np.arange(lo, hi + 0.5, 1.0):
-                trial = cuts[:i] + [float(c)] + cuts[i + 1:]
-                score = qwk(targets, apply_cuts(preds, trial))
-                if score > best + 1e-9:
-                    best, cuts = score, trial
-    return [round(c, 1) for c in cuts]
-
-
-def predict(model, loader, device):
-    model.eval()
-    preds, targets = [], []
-    with torch.no_grad():
-        for batch in loader:
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
-                                enabled=device.type == "cuda"):
-                out = model(batch["input_ids"].to(device), batch["attention_mask"].to(device))
-            preds.append(out.float().cpu().numpy())
-            targets.append(batch["labels"].numpy())
-    return np.vstack(preds) * 200.0, np.round(np.vstack(targets) * 200.0).astype(int)
+from avaliador.caminhos import PASTA_MODELO  # noqa: E402
+from avaliador.dados import TIPOS_DE_TEMA, load_splits  # noqa: E402
+from avaliador.modelo import MAX_LEN, MODEL_NAME, EnemDataset, carregar_modelo, ler_config, predict  # noqa: E402
+from avaliador.notas import DEFAULT_CUTS, apply_cuts, fit_cuts, qwk  # noqa: E402
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model-dir", default="./saved_model")
-    ap.add_argument("--tema", default="curto", choices=("trecho", "curto", "vazio", "misto"),
+    ap = argparse.ArgumentParser(description="Calibra os cortes das notas na validação.")
+    ap.add_argument("--model-dir", default=str(PASTA_MODELO))
+    ap.add_argument("--tema", default="curto", choices=TIPOS_DE_TEMA,
                     help="tema usado para ajustar e medir os cortes (padrão: curto, como no site)")
     args = ap.parse_args()
 
     config_path = os.path.join(args.model_dir, "config.json")
-    config = {}
-    if os.path.exists(config_path):
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
+    config = ler_config(args.model_dir)
     max_len = int(config.get("max_len", MAX_LEN))
     divisao = config.get("divisao", "aleatoria")  # a mesma usada no treino
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    from transformers import AutoTokenizer
-
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(args.model_dir, "tokenizer"))
-    model = EnemEssayEvaluator(MODEL_NAME).to(device)
-    model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
-                                     map_location=device, weights_only=True))
+    model = carregar_modelo(args.model_dir, device)
 
     splits = load_splits(tema=args.tema, divisao=divisao)
     loaders = {

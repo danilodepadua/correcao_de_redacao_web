@@ -6,10 +6,15 @@ títulos curtos permitem treinar e avaliar o modelo com o mesmo tipo de tema que
 ele recebe no uso real. Os títulos são gerados pelo Gemini a partir do texto de
 cada proposta e ficam salvos no repositório, então o script só precisa rodar uma vez.
 
-Uso:  python gerar_temas_curtos.py   (precisa de GEMINI_API_KEY no .env)
+Uso (dentro de Back-End):  python -m experimentos.gerar_temas_curtos   (precisa de GEMINI_API_KEY no .env)
 """
 import ast
 import csv
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):  # permite rodar também como "python experimentos/<script>.py"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import os
 import random
 import time
@@ -20,7 +25,9 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
-load_dotenv()
+from avaliador.caminhos import ARQUIVO_PROPOSTAS, ARQUIVO_TEMAS_CURTOS, PASTA_BACKEND  # noqa: E402
+
+load_dotenv(PASTA_BACKEND / ".env")
 MODELO = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
 
 INSTRUCAO = """Você recebe o texto motivador de propostas de redação no estilo ENEM.
@@ -46,7 +53,7 @@ def texto_proposta(desc) -> str:
 
 
 def main():
-    prompts = pd.read_csv("prompts.csv")
+    prompts = pd.read_csv(ARQUIVO_PROPOSTAS)
     cliente = genai.Client()
     resultado = {}
     for inicio in range(0, len(prompts), 15):
@@ -77,12 +84,12 @@ def main():
     faltando = sorted(set(prompts.id) - set(resultado))
     if faltando:
         raise SystemExit(f"Faltaram os temas {faltando}; rode de novo.")
-    with open("temas_curtos.csv", "w", encoding="utf-8", newline="") as f:
+    with open(ARQUIVO_TEMAS_CURTOS, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "tema_curto"])
         for pid in sorted(resultado):
             w.writerow([pid, resultado[pid]])
-    print("Gravado em temas_curtos.csv")
+    print(f"Gravado em {ARQUIVO_TEMAS_CURTOS}")
 
 
 if __name__ == "__main__":
