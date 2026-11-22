@@ -45,6 +45,10 @@ class RewriteResponse(BaseModel):
     redacao_reescrita: str
 
 
+# Tamanho máximo da sequência (tema + redação) em tokens.
+# Deve ser o mesmo valor usado no treinamento (MAX_LEN em train.py).
+MAX_LEN = 384
+
 # Estado Global
 MODEL = None
 TOKENIZER = None
@@ -137,7 +141,7 @@ def gerar_diagnostico(redacao: str, notas: dict, model, tokenizer, device, tema:
                 f"Tema: {tema} [SEP] Redação: {texto_sem_p}",
                 truncation=True,
                 padding="max_length",
-                max_length=512,
+                max_length=MAX_LEN,
                 return_tensors="pt",
             ).to(device)
             with torch.no_grad():
@@ -197,7 +201,7 @@ def avaliar_redacao(payload: EssayRequest):
         combined_text,
         truncation=True,
         padding="max_length",
-        max_length=512,
+        max_length=MAX_LEN,
         return_tensors="pt",
     ).to(DEVICE)
 

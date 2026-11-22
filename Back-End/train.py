@@ -15,6 +15,10 @@ from transformers import AutoModel, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
+# Tamanho máximo da sequência (tema + redação) em tokens.
+# Deve ser o mesmo valor usado na inferência (MAX_LEN em main.py).
+MAX_LEN = 384
+
 
 def format_duration(seconds: float) -> str:
     seconds = max(0, int(round(seconds)))
@@ -43,7 +47,7 @@ class EnemEssayEvaluator(nn.Module):
 
 
 class EnemDataset(Dataset):
-    def __init__(self, texts, themes, scores, tokenizer, max_len=384):
+    def __init__(self, texts, themes, scores, tokenizer, max_len=MAX_LEN):
         self.texts = texts
         self.themes = themes
         self.scores = scores
@@ -96,7 +100,7 @@ def extract_prompt_text(val):
                 s = cmd if cmd else " ".join(str(p) for p in paragraphs)
         except (SyntaxError, ValueError) as exc:
             logger.warning("Não foi possivel serializar o prompt: %s", exc)
-    # Normaliza espaços e limita a 300 caracteres para sobrar espaço na janela de 512 tokens para a redação
+    # Normaliza espaços e limita a 300 caracteres para sobrar espaço na janela de MAX_LEN tokens para a redação
     return " ".join(s.split())[:300]
 
 
