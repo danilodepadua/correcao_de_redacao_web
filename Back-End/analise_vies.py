@@ -134,7 +134,7 @@ def main():
     model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
                                      map_location=device, weights_only=True))
 
-    s = load_splits()
+    s = load_splits(tema="curto")  # título curto, como no site
     temas = list(s["val"][0]) + list(s["test"][0])
     textos = list(s["val"][1]) + list(s["test"][1])
 

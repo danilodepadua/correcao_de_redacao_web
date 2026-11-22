@@ -32,12 +32,12 @@ const PASSOS = [
 
 /** Resultado do experimento de viés (Back-End/analise_vies.py), em 914 redações inéditas. */
 const VIESES = [
-  { mudanca: "Repetir um parágrafo inteiro", efeito: "+36", subiu: "69%", reacao: "Viés: premia texto mais longo", ok: false },
+  { mudanca: "Repetir um parágrafo inteiro", efeito: "+33", subiu: "69%", reacao: "Viés: premia texto mais longo", ok: false },
   { mudanca: "Colar uma citação famosa sem relação com o tema", efeito: "+31", subiu: "66%", reacao: "Viés: premia repertório genérico", ok: false },
-  { mudanca: "Pôr conectivos no início dos parágrafos", efeito: "+11", subiu: "29%", reacao: "Viés leve", ok: false },
-  { mudanca: "Embaralhar a ordem das frases", efeito: "−9", subiu: "13%", reacao: "Cai pouco: quase não vê a coerência", ok: false },
-  { mudanca: "Remover a conclusão", efeito: "−60", subiu: "1%", reacao: "Esperada (cai mais na C5)", ok: true },
-  { mudanca: "Tirar todos os acentos", efeito: "−85", subiu: "1%", reacao: "Esperada", ok: true },
+  { mudanca: "Pôr conectivos no início dos parágrafos", efeito: "+9", subiu: "26%", reacao: "Viés leve", ok: false },
+  { mudanca: "Embaralhar a ordem das frases", efeito: "−13", subiu: "13%", reacao: "Cai pouco: quase não vê a coerência", ok: false },
+  { mudanca: "Remover a conclusão", efeito: "−66", subiu: "2%", reacao: "Esperada (cai mais na C5)", ok: true },
+  { mudanca: "Tirar todos os acentos", efeito: "−115", subiu: "0%", reacao: "Esperada", ok: true },
 ];
 
 function Sobre() {

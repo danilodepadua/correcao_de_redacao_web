@@ -16,9 +16,9 @@ import urllib.request
 import zipfile
 
 REPO = "danilodepadua/correcao_de_redacao_web"
-VERSAO = "modelo-v1"
+VERSAO = "modelo-v2"
 ARQUIVO = "saved_model.zip"
-SHA256 = "070c3bbf82f487a47af8d4360c0cef71a81b03841eefef8f090a18a44b1cc29f"
+SHA256 = "b7c3cf6a055975d47d80d2301e6500754a8c7c1aae34ff2a743d513a37eed0e1"
 URL = f"https://github.com/{REPO}/releases/download/{VERSAO}/{ARQUIVO}"
 
 PASTA_BACKEND = os.path.dirname(os.path.abspath(__file__))

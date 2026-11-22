@@ -1,0 +1,28 @@
+{
+  "modelo": "TF-IDF (palavras 1-2 + caracteres 2-5) + Ridge",
+  "tema_treino": "misto",
+  "alpha": 0.3,
+  "atributos": 118910,
+  "teste_tema_curto": {
+    "qwk_simples": 0.4759,
+    "qwk_calibrado": 0.5136,
+    "qwk_calibrado_por_competencia": [
+      0.4644,
+      0.4853,
+      0.5002,
+      0.5385,
+      0.5797
+    ]
+  },
+  "teste_tema_trecho": {
+    "qwk_simples": 0.5025,
+    "qwk_calibrado": 0.5346,
+    "qwk_calibrado_por_competencia": [
+      0.488,
+      0.5075,
+      0.5424,
+      0.5319,
+      0.603
+    ]
+  }
+}

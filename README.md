@@ -48,6 +48,7 @@ Arquivos usados:
 
 - `Back-End/essay-br.csv`: colunas `prompt` (id do tema), `title`, `essay` (lista de parágrafos), `competence` (as 5 notas) e `score` (nota final).
 - `Back-End/prompts.csv`: colunas `id` e `description` (texto da proposta de cada tema).
+- `Back-End/temas_curtos.csv` (criado pela equipe): um título curto para cada um dos 86 temas, como o usuário digita no site ("Desafios para a superação do analfabetismo funcional no Brasil"). O Essay-BR só traz o texto motivador, então os títulos foram gerados com o Gemini a partir do texto de cada proposta (`gerar_temas_curtos.py`).
 
 As notas se concentram em 120 e 160 em todas as competências. Notas 0 e 200 são raras: em C1, por exemplo, só 97 redações têm 0 e 122 têm 200. Esse desbalanceamento faz o modelo tender a prever notas intermediárias.
 
@@ -58,7 +59,8 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
 ### 1. Avaliador: BERTimbau ajustado (rede neural treinada pelo grupo)
 
 - **Base:** `neuralmind/bert-base-portuguese-cased` (BERTimbau Base, 12 camadas), um BERT pré-treinado em português.
-- **Entrada:** `"Tema: <proposta> [SEP] Redação: <texto>"`, cortada em 512 tokens (`MAX_LEN`, o limite do BERT). A proposta é resumida a 300 caracteres.
+- **Entrada:** `"Tema: <tema> [SEP] Redação: <texto>"`, cortada em 512 tokens (`MAX_LEN`, o limite do BERT).
+- **Tema no treino ("tema misto"):** para cada redação, sorteia-se um de dois formatos de tema, com 50% de chance cada: até 300 caracteres do texto motivador da proposta ou o título curto de `temas_curtos.csv`. Assim o modelo funciona com o título que o usuário digita no site (veja "Correção do tema" nos resultados).
 - **Cabeça:** dropout de 0,2 e uma camada linear de 768 para 5 saídas sobre o token `[CLS]`.
 - **Alvo:** as 5 notas divididas por 200 (escala de 0 a 1). Na saída, as previsões voltam para a escala de 0 a 200 e são convertidas em 0, 40, …, 200 por cortes calibrados (veja abaixo).
 - **Treino:**
@@ -69,7 +71,7 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
   - é salvo o checkpoint com o maior QWK de validação.
 - **Calibração dos cortes** (`calibrate.py`):
   - o arredondamento simples (múltiplo de 40 mais próximo) concentra as notas no meio;
-  - depois do treino, os 5 cortes de cada competência são ajustados no conjunto de **validação** para maximizar o QWK;
+  - depois do treino, os 5 cortes de cada competência são ajustados no conjunto de **validação**, com título curto como tema (a condição do site), para maximizar o QWK;
   - os cortes ficam em `saved_model/config.json`, junto com o `max_len`, e a API lê os dois desse arquivo.
 - **Métrica:** QWK (*Quadratic Weighted Kappa*), a métrica padrão de correção automática de redações. Ela mede a concordância com as notas humanas e pune mais os erros grandes. Vale 1 para concordância perfeita e 0 para concordância ao acaso.
 - **Código:** `Back-End/train.py` (treino; todos os hiperparâmetros podem ser passados por linha de comando, veja `python train.py --help`) e `Back-End/calibrate.py` (calibração).
@@ -124,9 +126,9 @@ O que mais ajudou foi ajustar o BERT inteiro (+0,05). Usar 512 tokens também aj
 
 Também testamos a calibração dos cortes no modelo do E2: o QWK de teste subiu de 0,507 para 0,574.
 
-### Modelo final (E3 + calibração)
+### Modelo v1 (E3 + calibração)
 
-Treino em uma RTX 4050 Laptop (6 GB), em 10 min 51 s. O melhor checkpoint foi o da época 3.
+Esta seção descreve o primeiro modelo final (Release `modelo-v1`), treinado só com o trecho do texto motivador como tema. Treino em uma RTX 4050 Laptop (6 GB), em 10 min 51 s. O melhor checkpoint foi o da época 3.
 
 | Época | Perda de treino | Perda de validação | QWK médio (validação) |
 |---|---|---|---|
@@ -135,40 +137,74 @@ Treino em uma RTX 4050 Laptop (6 GB), em 10 min 51 s. O melhor checkpoint foi o 
 | 3 | 0,0266 | **0,0262** | **0,558** |
 | 4 | 0,0235 | 0,0285 | 0,544 |
 
-**QWK no conjunto de teste** (457 redações que o modelo nunca viu):
+**QWK no conjunto de teste** (457 redações que o modelo nunca viu, com o trecho do texto motivador como tema):
 
 | Modelo | C1 | C2 | C3 | C4 | C5 | Média |
 |---|---|---|---|---|---|---|
 | Original (384 tokens, 3 camadas, arredondamento simples) | 0,342 | 0,431 | 0,395 | 0,496 | 0,531 | 0,439 |
-| Final, arredondamento simples | 0,469 | 0,480 | 0,499 | 0,547 | 0,603 | 0,520 |
-| **Final, cortes calibrados** | **0,522** | **0,557** | **0,538** | **0,595** | **0,636** | **0,570** |
+| v1, arredondamento simples | 0,469 | 0,480 | 0,499 | 0,547 | 0,603 | 0,520 |
+| **v1, cortes calibrados** | **0,522** | **0,557** | **0,538** | **0,595** | **0,636** | **0,570** |
 
-MSE de teste do modelo final: 0,0276 (na escala de 0 a 1).
+MSE de teste do v1: 0,0276 (na escala de 0 a 1).
 
 Como ler: o QWK subiu de 0,44 para 0,57, uma concordância **moderada** com os corretores humanos. A maior melhora foi na C1 (norma culta, de 0,34 para 0,52), que dependia mais do texto inteiro. Na validação, os cortes calibrados chegam a 0,643, mas esse número é otimista porque os cortes foram ajustados nela. O valor honesto é o do teste.
 
-As notas também ficaram mais espalhadas: um texto sem sentido ("palavra" repetida 40 vezes) caiu de 320 para 80 pontos (e hoje é recusado pelo filtro de entrada). Nas 3 redações reais da página de exemplos (notas humanas 960, 520 e 240, escolhidas pela nota, pelo tamanho e por não terem correções embutidas, antes de ver a nota do modelo), o modelo deu 840, 520 e 240. São só 3 casos; a medida confiável é o QWK de teste.
+As notas também ficaram mais espalhadas: um texto sem sentido ("palavra" repetida 40 vezes) caiu de 320 para 80 pontos (e hoje é recusado pelo filtro de entrada).
+
+### Correção do tema (modelo final, v2)
+
+No treino do v1, o "tema" era sempre um trecho do texto motivador da proposta (muitas vezes nem é o tema, e sim o começo do texto de apoio). No site, o usuário digita um título curto. Medimos o efeito dessa diferença no conjunto de teste (`avaliar_tema.py`) e treinamos de novo com o **tema misto** (metade trecho, metade título curto), com os cortes calibrados usando título curto:
+
+| Tema na entrada (teste) | v1 (só trecho) | **v2 (tema misto)** |
+|---|---|---|
+| **Título curto (como no site)** | 0,481 | **0,571** |
+| Trecho do texto motivador | 0,570 | **0,573** |
+| Sem tema | 0,360 | **0,433** |
+
+Na condição real do site, o QWK do v1 era só 0,48; o v2 chega a 0,57 sem perder nada com o trecho. A queda grande quando o tema é retirado (0,57 → 0,43) mostra que o modelo usa bastante o tema. Como os mesmos temas aparecem no treino e no teste, parte disso provavelmente é um atalho, ou seja, uma "nota média por tema" que o modelo aprende (veja as limitações).
+
+QWK por competência do **modelo final (v2)**, no teste e com título curto:
+
+| | C1 | C2 | C3 | C4 | C5 | Média |
+|---|---|---|---|---|---|---|
+| Arredondamento simples | 0,410 | 0,483 | 0,478 | 0,552 | 0,589 | 0,503 |
+| **Cortes calibrados** | **0,533** | **0,570** | **0,543** | **0,591** | **0,618** | **0,571** |
+
+O treino do v2 levou cerca de 11 minutos, e o melhor checkpoint foi o da época 4 (QWK de validação 0,544, com tema misto).
+
+### Comparação com um modelo clássico (TF-IDF + regressão linear)
+
+Para medir o ganho da rede neural, treinamos um modelo de referência clássico (`baseline_tfidf.py`) nas mesmas condições: mesma divisão, tema misto no treino, regularização escolhida pela validação e cortes calibrados com título curto. Ele usa TF-IDF de palavras (1 e 2 palavras seguidas) e de pedaços de 2 a 5 caracteres (118.910 atributos), com regressão Ridge.
+
+| Modelo (teste, título curto, cortes calibrados) | C1 | C2 | C3 | C4 | C5 | Média |
+|---|---|---|---|---|---|---|
+| TF-IDF + Ridge | 0,464 | 0,485 | 0,500 | 0,539 | 0,580 | 0,514 |
+| **BERTimbau ajustado (v2)** | **0,533** | **0,570** | **0,543** | **0,591** | **0,618** | **0,571** |
+
+O BERTimbau ganha em todas as competências (+0,057 na média). A maior diferença está na C2 (tema e repertório, +0,085) e na C1 (norma culta, +0,069). O ganho é real, mas moderado: um modelo de palavras e caracteres já captura boa parte do sinal, o que é coerente com a análise de viés (o BERTimbau também presta mais atenção ao vocabulário do que à organização das ideias). Com o trecho do texto motivador como tema, o TF-IDF chega a 0,535.
+
+Nas 3 redações reais da página de exemplos (notas humanas 960, 520 e 240, escolhidas pela nota, pelo tamanho e por não terem correções embutidas, antes de ver a nota do modelo), o v2 deu 840, 520 e 40. O v1 tinha dado 840, 520 e 240. São só 3 casos; a medida confiável é o QWK de teste.
 
 ## Análise de viés: o que engana o modelo
 
-Um dos objetivos é reconhecer o que realmente eleva o nível de uma redação sem cair no viés do modelo. Para isso, o script `Back-End/analise_vies.py` aplica mudanças controladas às 914 redações de validação e teste e mede como a nota prevista reage. Cada mudança só é medida nas redações em que o texto alterado ainda cabe inteiro em 512 tokens, para não confundir com o corte.
+Um dos objetivos é reconhecer o que realmente eleva o nível de uma redação sem cair no viés do modelo. Para isso, o script `Back-End/analise_vies.py` aplica mudanças controladas às 914 redações de validação e teste, com título curto como tema (como no site), e mede como a nota prevista pelo modelo final (v2) reage. Cada mudança só é medida nas redações em que o texto alterado ainda cabe inteiro em 512 tokens, para não confundir com o corte.
 
 | Mudança no texto | Tipo | n | Δ nota (0–1000) | C1 | C2 | C3 | C4 | C5 | Nota final subiu |
 |---|---|---|---|---|---|---|---|---|---|
-| Conectivos no início dos parágrafos | superficial | 603 | +10,5 | +0,8 | +1,8 | +1,7 | +3,1 | +3,2 | 29% |
-| Repetir um parágrafo inteiro | superficial | 353 | **+35,5** | +3,4 | +8,7 | +7,7 | +8,9 | +6,8 | **69%** |
-| Citação famosa sem relação com o tema | superficial | 533 | **+30,9** | +3,9 | +7,1 | +6,0 | +6,9 | +7,0 | **66%** |
-| Tirar todos os acentos | piora | 489 | −85,2 | −18,7 | −22,6 | −15,4 | −15,1 | −13,4 | 1% |
-| Embaralhar a ordem das frases | piora | 639 | **−9,1** | −2,4 | −0,3 | −0,9 | −3,1 | −2,5 | 13% |
-| Remover a conclusão | piora | 631 | −60,1 | −4,4 | −11,3 | −12,5 | −13,5 | −18,4 | 1% |
+| Conectivos no início dos parágrafos | superficial | 725 | +9,4 | +0,7 | +1,6 | +1,1 | +3,1 | +2,8 | 26% |
+| Repetir um parágrafo inteiro | superficial | 461 | **+32,6** | +3,2 | +9,4 | +6,4 | +8,0 | +5,7 | **69%** |
+| Citação famosa sem relação com o tema | superficial | 689 | **+30,8** | +4,7 | +7,3 | +5,4 | +6,9 | +6,4 | **66%** |
+| Tirar todos os acentos | piora | 634 | −114,7 | −26,1 | −30,0 | −20,6 | −20,3 | −17,7 | 0% |
+| Embaralhar a ordem das frases | piora | 757 | **−12,6** | −4,1 | +1,0 | −0,6 | −4,3 | −4,5 | 13% |
+| Remover a conclusão | piora | 749 | −65,9 | −5,0 | −11,4 | −12,8 | −15,6 | −21,1 | 2% |
 
 Δ é a variação média da nota contínua. A última coluna é a fração de redações cuja nota final (já convertida) aumentou.
 
 O que isso mostra:
 
 - **Vieses:** o modelo premia **texto mais longo** (repetir um parágrafo, sem nenhuma ideia nova, aumenta a nota de 69% das redações) e **repertório genérico** (uma citação de Aristóteles sem relação com o tema aumenta a de 66%). Conectivos inseridos mecanicamente também ajudam um pouco.
-- **Ponto cego:** embaralhar as frases quase não muda a nota (−9). O modelo enxerga o vocabulário, mas pouco a coerência e a ordem das ideias.
-- **Reações corretas:** tirar os acentos derruba a nota (−85), e remover a conclusão também (−60), com a maior queda na C5, como esperado.
+- **Ponto cego:** embaralhar as frases quase não muda a nota (−13). O modelo enxerga o vocabulário, mas pouco a coerência e a ordem das ideias.
+- **Reações corretas:** tirar os acentos derruba a nota (−115), e remover a conclusão também (−66), com a maior queda na C5, como esperado.
 
 Como o site lida com isso: as verificações por regras e os apontamentos do Gemini não dependem da nota da rede. As instruções do Gemini proíbem acrescentar expressões só porque "dão nota". A página "O modelo" mostra essa tabela ao usuário. Uma forma de reduzir esses vieses no treino seria usar exemplos alterados desse jeito, com nota menor, como dados extras (veja os próximos passos).
 
@@ -231,13 +267,13 @@ python baixar_modelo.py   # baixa o modelo já treinado (~192 MB), sem precisar 
 python main.py            # API em http://localhost:8000
 ```
 
-Os pesos (`Back-End/saved_model/`) não ficam no git por serem grandes. O modelo final, já calibrado, está publicado na Release [`modelo-v1`](https://github.com/danilodepadua/correcao_de_redacao_web/releases/tag/modelo-v1), e o `baixar_modelo.py` baixa, confere (SHA-256) e extrai esse arquivo. Os pesos da Release estão em float16 para ocupar metade do espaço: em 914 redações de validação e teste, só 2 tiveram uma nota diferente da versão em float32.
+Os pesos (`Back-End/saved_model/`) não ficam no git por serem grandes. O modelo final (v2, tema misto), já calibrado, está publicado na Release [`modelo-v2`](https://github.com/danilodepadua/correcao_de_redacao_web/releases/tag/modelo-v2), e o `baixar_modelo.py` baixa, confere (SHA-256) e extrai esse arquivo. Os pesos da Release estão em float16 para ocupar metade do espaço: em 914 redações de validação e teste, só 5 tiveram uma nota de competência diferente da versão em float32. O modelo anterior continua na Release `modelo-v1`.
 
 Para **treinar do zero** em vez de baixar (cerca de 12 min numa GPU):
 
 ```
-python train.py       # treina e gera saved_model/
-python calibrate.py   # ajusta os cortes das notas na validação
+python train.py       # treina e gera saved_model/ (tema misto, padrão)
+python calibrate.py   # ajusta os cortes das notas na validação (título curto, padrão)
 ```
 
 Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`.
@@ -265,6 +301,8 @@ npm test          # testes das regras do site
 - **Texto cortado:** mesmo com 512 tokens (o limite do BERT), 11,6% das redações perdem o final, onde fica a proposta de intervenção (C5).
 - **Notas ainda puxadas para o meio:** a calibração dos cortes melhorou isso, mas o modelo ainda é treinado com MSE em dados com poucas notas 0 e 200.
 - **Temas repetidos nos três conjuntos:** a divisão é aleatória por redação, então os mesmos temas aparecem no treino e no teste. O desempenho em temas inéditos pode ser menor.
+- **Dependência do tema:** sem tema, o QWK cai de 0,57 para 0,43. O modelo usa o tema em parte como atalho (provavelmente uma "nota média por tema"), o que reforça o risco acima para temas que não estão no Essay-BR.
+- **Títulos curtos gerados por IA:** os 86 títulos de `temas_curtos.csv` foram gerados pelo Gemini e não foram revisados um a um por pessoas.
 - **Uma rodada por experimento:** cada configuração foi treinada com uma única semente, então diferenças pequenas entre experimentos podem ser ruído.
 - **Vieses do modelo:** premia texto longo e repertório genérico e quase não percebe a coerência (veja a análise de viés).
 - **Correções embutidas no dataset:** em parte das redações, as correções do corretor humano aparecem misturadas ao texto, logo depois do erro (ex.: "o brasil Brasil", "substancias substâncias"). Uma busca simples (palavra seguida dela mesma com outro acento ou maiúscula) encontrou 62 redações (1,4%) com 3 ou mais casos, concentradas nos temas 0 a 12, 20 e 42. O modelo pode estar aprendendo com o texto já corrigido.
@@ -275,7 +313,6 @@ npm test          # testes das regras do site
 
 ## Próximos passos
 
-- Comparar com um modelo de referência simples (TF-IDF + regressão linear) para medir o ganho do BERT.
 - Avaliar com divisão por tema (temas do teste ausentes do treino) e com várias sementes.
 - Lidar com redações maiores que 512 tokens (por exemplo, dividir em dois trechos e combinar).
 - Reduzir os vieses no treino: acrescentar versões alteradas das redações (parágrafo repetido, frases embaralhadas, citação sem relação) com nota menor.
@@ -289,6 +326,10 @@ npm test          # testes das regras do site
 Back-End/
   train.py            treino e avaliação do BERTimbau
   calibrate.py        calibração dos cortes das notas
+  baseline_tfidf.py   modelo de referência clássico (TF-IDF + Ridge)
+  avaliar_tema.py     QWK do modelo com cada tipo de tema (trecho, curto, vazio)
+  gerar_temas_curtos.py  gera temas_curtos.csv com o Gemini
+  temas_curtos.csv    título curto de cada um dos 86 temas
   baixar_modelo.py    baixa o modelo treinado da Release do GitHub
   analise_vies.py     experimento de viés (mudanças controladas no texto)
   main.py             API (avaliação e reescrita)

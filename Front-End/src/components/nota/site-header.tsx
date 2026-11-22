@@ -11,7 +11,7 @@ const LINKS = [
 export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2 sm:h-16 sm:flex-nowrap sm:px-6 sm:py-0">
         <Link to="/" className="group flex items-baseline gap-2">
           <span className="font-display text-2xl font-semibold tracking-tight text-ink">Nota</span>
           <span className="relative font-display text-2xl font-semibold italic text-pen">
@@ -31,12 +31,13 @@ export function SiteHeader() {
             </svg>
           </span>
         </Link>
-        <nav className="flex items-center gap-1 text-sm">
+        {/* Em telas estreitas o menu desce para uma segunda linha, com rolagem lateral se precisar */}
+        <nav className="-mx-2 flex w-full items-center justify-between gap-0.5 overflow-x-auto text-sm sm:mx-0 sm:w-auto sm:justify-end sm:gap-1">
           {LINKS.map((l) => (
             <Link
               key={l.to}
               to={l.to}
-              className="rounded-md px-2.5 py-1.5 font-medium text-muted-foreground transition-colors hover:text-ink sm:px-3"
+              className="whitespace-nowrap rounded-md px-2 py-1.5 font-medium text-muted-foreground transition-colors hover:text-ink sm:px-3"
               activeProps={{ className: "text-ink underline decoration-pen decoration-2 underline-offset-8" }}
               activeOptions={{ exact: true }}
             >

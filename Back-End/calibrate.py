@@ -70,6 +70,8 @@ def predict(model, loader, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-dir", default="./saved_model")
+    ap.add_argument("--tema", default="curto", choices=("trecho", "curto", "vazio", "misto"),
+                    help="tema usado para ajustar e medir os cortes (padrão: curto, como no site)")
     args = ap.parse_args()
 
     config_path = os.path.join(args.model_dir, "config.json")
@@ -87,7 +89,7 @@ def main():
     model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
                                      map_location=device, weights_only=True))
 
-    splits = load_splits()
+    splits = load_splits(tema=args.tema)
     loaders = {
         nome: DataLoader(EnemDataset(txt, temas, y, tokenizer, max_len), batch_size=16)
         for nome, (temas, txt, y) in splits.items() if nome in ("val", "test")
@@ -108,7 +110,7 @@ def main():
     report("Validação", val_p, val_y)
     t_antes, t_depois, t_comp = report("Teste", test_p, test_y)
 
-    config.update({"max_len": max_len, "model_name": MODEL_NAME, "cuts": cuts})
+    config.update({"max_len": max_len, "model_name": MODEL_NAME, "cuts": cuts, "tema_calibracao": args.tema})
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 

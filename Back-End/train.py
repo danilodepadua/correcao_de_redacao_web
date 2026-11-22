@@ -148,11 +148,23 @@ def evaluate(model, loader, criterion, device, use_amp=False):
     return avg_loss, qwk_scores
 
 
-def load_splits(seed: int = 42):
+TIPOS_DE_TEMA = ("trecho", "curto", "vazio", "misto")
+
+
+def load_splits(seed: int = 42, tema: str = "trecho"):
     """Carrega o Essay-BR e devolve {"train"|"val"|"test": (temas, textos, notas)}.
 
-    Divisão fixa 80/10/10 (random_state=42), a mesma em todos os experimentos.
+    Divisão fixa 80/10/10 (random_state=42), a mesma em todos os experimentos,
+    qualquer que seja o tipo de tema (só o texto do tema muda, não as redações).
+
+    tema:
+      "trecho" — até 300 caracteres do texto motivador da proposta (prompts.csv)
+      "curto"  — título curto do tema (temas_curtos.csv), como o usuário digita no site
+      "vazio"  — sem tema
+      "misto"  — sorteia, para cada redação, trecho ou título curto (50% cada)
     """
+    if tema not in TIPOS_DE_TEMA:
+        raise ValueError(f"tema deve ser um de {TIPOS_DE_TEMA}")
     # Carregamento e junção das redações (4570) com os temas (86)
     df = pd.read_csv("essay-br.csv")
     prompts_df = pd.read_csv("prompts.csv")
@@ -164,7 +176,19 @@ def load_splits(seed: int = 42):
 
     # Conversão das colunas serializadas para texto contínuo e matriz (4570, 5)
     X_texts = df["essay"].apply(lambda x: "\n".join(ast.literal_eval(x))).values
-    X_themes = df["tema_prompt"].fillna("").astype(str).values
+    trechos = df["tema_prompt"].fillna("").astype(str).values
+    if tema == "trecho":
+        X_themes = trechos
+    elif tema == "vazio":
+        X_themes = np.array([""] * len(df), dtype=object)
+    else:
+        curtos_df = pd.read_csv("temas_curtos.csv").set_index("id")["tema_curto"]
+        curtos = df["prompt"].map(curtos_df).fillna("").astype(str).values
+        if tema == "curto":
+            X_themes = curtos
+        else:  # misto: sorteio fixo, para o treino ver os dois tipos de tema
+            usa_curto = np.random.default_rng(seed).random(len(df)) < 0.5
+            X_themes = np.where(usa_curto, curtos, trechos)
     y = np.array(df["competence"].apply(ast.literal_eval).tolist(), dtype=np.float32)
 
     # Divisão: 80% Treino, 10% Validação, 10% Teste (fixa, para comparar experimentos)
@@ -196,6 +220,9 @@ def parse_args():
                    help="critério para escolher o melhor checkpoint na validação")
     p.add_argument("--no-amp", dest="amp", action="store_false",
                    help="desliga a precisão mista bf16 (ligada por padrão na GPU)")
+    p.add_argument("--tema", choices=TIPOS_DE_TEMA, default="misto",
+                   help="tema usado na entrada: misto (padrão) sorteia trecho do texto motivador "
+                        "ou título curto, para o modelo funcionar com o título que o usuário digita")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default="./saved_model", help="pasta onde o modelo é salvo")
     p.add_argument("--no-test", action="store_true",
@@ -210,7 +237,7 @@ def main():
     use_amp = args.amp and device.type == "cuda"
     print(f"Configuração: {vars(args)}", flush=True)
 
-    splits = load_splits()
+    splits = load_splits(tema=args.tema)
     X_train_t, X_train_txt, y_train = splits["train"]
     X_val_t, X_val_txt, y_val = splits["val"]
     X_test_t, X_test_txt, y_test = splits["test"]
@@ -366,7 +393,7 @@ def main():
 
     # config.json: lido pela API para usar o mesmo max_len do treino
     with open(os.path.join(args.out, "config.json"), "w", encoding="utf-8") as f:
-        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME}, f, indent=2)
+        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME, "tema_treino": args.tema}, f, indent=2)
     with open(os.path.join(args.out, "results.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
