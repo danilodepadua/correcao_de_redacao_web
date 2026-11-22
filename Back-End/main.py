@@ -1,3 +1,4 @@
+import json
 import os
 from contextlib import asynccontextmanager
 from typing import List
@@ -53,12 +54,31 @@ class RewriteResponse(BaseModel):
 
 
 # Tamanho máximo da sequência (tema + redação) em tokens.
-# Deve ser o mesmo valor usado no treinamento (MAX_LEN em train.py).
+# Ao carregar o modelo, é substituído pelo valor de saved_model/config.json,
+# gravado pelo train.py, para que a inferência use o mesmo valor do treino.
+# 384 é o valor usado por modelos treinados antes de existir o config.json.
 MAX_LEN = 384
 
 # Configuração do Gemini (usado na reescrita da redação)
 # GEMINI_MODEL pode ser trocado no .env por qualquer modelo disponível para a sua chave
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
+
+# Cortes que convertem a previsão contínua (0–200) em notas 0, 40, ..., 200.
+# Padrão: múltiplo de 40 mais próximo. Se saved_model/config.json tiver "cuts"
+# (gerados pelo calibrate.py), cada competência usa os seus cortes calibrados.
+CORTES_PADRAO = [20.0, 60.0, 100.0, 140.0, 180.0]
+CUTS = [CORTES_PADRAO] * 5
+NOTAS_POSSIVEIS = np.array([0, 40, 80, 120, 160, 200])
+
+
+def converter_notas(raw_outputs) -> np.ndarray:
+    """Converte a saída do modelo (escala 0–1, 5 competências) em notas 0–200 múltiplas de 40."""
+    escala = np.asarray(raw_outputs, dtype=float) * 200.0
+    return np.array([
+        int(NOTAS_POSSIVEIS[np.searchsorted(CUTS[i], escala[i], side="right")])
+        for i in range(5)
+    ])
+
 
 # Estado Global
 MODEL = None
@@ -70,9 +90,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Gerenciador de Ciclo de Vida
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global MODEL, TOKENIZER
+    global MODEL, TOKENIZER, MAX_LEN, CUTS
     MODEL_PATH = "./saved_model/model_weights.pt"
     TOKENIZER_PATH = "./saved_model/tokenizer"
+    CONFIG_PATH = "./saved_model/config.json"
 
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
@@ -80,7 +101,15 @@ async def lifespan(app: FastAPI):
             "Verifique se a pasta 'saved_model' foi extraída na raiz do projeto."
         )
 
-    print(f"Carregando modelo e tokenizador em {DEVICE}...")
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            config = json.load(f)
+        MAX_LEN = int(config.get("max_len", MAX_LEN))
+        if config.get("cuts"):
+            CUTS = [list(map(float, c)) for c in config["cuts"]]
+            print(f"Usando cortes calibrados: {CUTS}")
+
+    print(f"Carregando modelo e tokenizador em {DEVICE} (max_len={MAX_LEN})...")
     TOKENIZER = AutoTokenizer.from_pretrained(TOKENIZER_PATH)
     MODEL = EnemEssayEvaluator().to(DEVICE)
     MODEL.load_state_dict(
@@ -162,7 +191,7 @@ def gerar_diagnostico(redacao: str, notas: dict, model, tokenizer, device, tema:
                     .cpu()
                     .numpy()[0]
                 )
-            nota_sem_p = int(np.sum(np.round(np.clip(out * 200.0, 0, 200) / 40.0) * 40))
+            nota_sem_p = int(np.sum(converter_notas(out)))
 
             # Verifica qual parágrafo causou a maior queda na nota final ao ser removido
             queda = nota_base - nota_sem_p
@@ -210,10 +239,7 @@ def prever_notas(tema: str, redacao: str) -> dict:
             MODEL(inputs["input_ids"], inputs["attention_mask"]).cpu().numpy()[0]
         )
 
-    # Converte [0, 1] para múltiplos de 40 na escala [0, 200]
-    raw_scores = raw_outputs * 200.0
-    clipped = np.clip(raw_scores, 0, 200)
-    rounded = (np.round(clipped / 40.0) * 40).astype(int)
+    rounded = converter_notas(raw_outputs)
 
     return {
         "c1_norma_culta": int(rounded[0]),

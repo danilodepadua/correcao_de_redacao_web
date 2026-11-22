@@ -58,15 +58,21 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
 ### 1. Avaliador: BERTimbau ajustado (rede neural treinada pelo grupo)
 
 - **Base:** `neuralmind/bert-base-portuguese-cased` (BERTimbau Base, 12 camadas), um BERT pré-treinado em português.
-- **Entrada:** `"Tema: <proposta> [SEP] Redação: <texto>"`, cortada em 384 tokens (`MAX_LEN`). A proposta é resumida a 300 caracteres.
+- **Entrada:** `"Tema: <proposta> [SEP] Redação: <texto>"`, cortada em 512 tokens (`MAX_LEN`, o limite do BERT). A proposta é resumida a 300 caracteres.
 - **Cabeça:** dropout de 0,2 e uma camada linear de 768 para 5 saídas sobre o token `[CLS]`.
-- **Alvo:** as 5 notas divididas por 200 (escala de 0 a 1). Na saída, as previsões voltam para a escala de 0 a 200 e são arredondadas para o múltiplo de 40 mais próximo.
+- **Alvo:** as 5 notas divididas por 200 (escala de 0 a 1). Na saída, as previsões voltam para a escala de 0 a 200 e são convertidas em 0, 40, …, 200 por cortes calibrados (veja abaixo).
 - **Treino:**
-  - perda MSE e otimizador AdamW (lr 2e-5, weight decay 0,01), com batch 8 e 3 épocas;
-  - os embeddings e as 9 primeiras camadas do BERT ficam congelados, e só as 3 últimas camadas e a cabeça são treinadas;
-  - é salvo o checkpoint com a menor perda de validação.
+  - todas as 12 camadas do BERT são ajustadas;
+  - perda MSE e otimizador AdamW (lr 2e-5, weight decay 0,01), com batch 8 e 4 épocas;
+  - a taxa de aprendizado sobe nos primeiros 10% dos passos e depois cai de forma linear;
+  - usa precisão mista bf16 na GPU;
+  - é salvo o checkpoint com o maior QWK de validação.
+- **Calibração dos cortes** (`calibrate.py`):
+  - o arredondamento simples (múltiplo de 40 mais próximo) concentra as notas no meio;
+  - depois do treino, os 5 cortes de cada competência são ajustados no conjunto de **validação** para maximizar o QWK;
+  - os cortes ficam em `saved_model/config.json`, junto com o `max_len`, e a API lê os dois desse arquivo.
 - **Métrica:** QWK (*Quadratic Weighted Kappa*), a métrica padrão de correção automática de redações. Ela mede a concordância com as notas humanas e pune mais os erros grandes. Vale 1 para concordância perfeita e 0 para concordância ao acaso.
-- **Código:** `Back-End/train.py`.
+- **Código:** `Back-End/train.py` (treino; todos os hiperparâmetros podem ser passados por linha de comando, veja `python train.py --help`) e `Back-End/calibrate.py` (calibração).
 
 ### 2. Reescrita: Gemini (modelo pronto, via API)
 
@@ -91,23 +97,45 @@ Essas regras apontam trechos exatos do texto, o que a rede neural sozinha não f
 
 ## Resultados
 
-Treino feito em uma RTX 4050 Laptop (6 GB), em 4 min 21 s.
+### Experimentos
+
+Todos os experimentos usaram a mesma divisão de dados e foram comparados **só pela validação**. O conjunto de teste ficou de fora até a escolha final.
+
+| Experimento | Tokens | Camadas ajustadas | Épocas | Agendador de lr | Checkpoint por | QWK (validação) |
+|---|---|---|---|---|---|---|
+| E0: modelo original | 384 | 3 últimas | 3 | não | perda | 0,497 |
+| E1 | 512 | 3 últimas | 3 | não | perda | 0,514 |
+| E2 | 384 | todas | 4 | sim | QWK | 0,551 |
+| **E3: modelo final** | **512** | **todas** | **4** | **sim** | **QWK** | **0,558** |
+
+O que mais ajudou foi ajustar o BERT inteiro (+0,05). Usar 512 tokens também ajuda (+0,01 a +0,02), porque 46% das redações passavam de 384 tokens e perdiam o final. Cada configuração foi rodada uma vez só, então diferenças de cerca de 0,01 podem ser ruído.
+
+Também testamos a calibração dos cortes no modelo do E2: o QWK de teste subiu de 0,507 para 0,574.
+
+### Modelo final (E3 + calibração)
+
+Treino em uma RTX 4050 Laptop (6 GB), em 10 min 51 s. O melhor checkpoint foi o da época 3.
 
 | Época | Perda de treino | Perda de validação | QWK médio (validação) |
 |---|---|---|---|
-| 1 | 0,0482 | **0,0282** | **0,503** |
-| 2 | 0,0336 | 0,0350 | 0,491 |
-| 3 | 0,0299 | 0,0317 | 0,467 |
+| 1 | 0,0697 | 0,0291 | 0,514 |
+| 2 | 0,0323 | 0,0281 | 0,520 |
+| 3 | 0,0266 | **0,0262** | **0,558** |
+| 4 | 0,0235 | 0,0285 | 0,544 |
 
-O melhor checkpoint foi o da época 1. Resultado no **conjunto de teste**:
+**QWK no conjunto de teste** (457 redações que o modelo nunca viu):
 
-| | C1 | C2 | C3 | C4 | C5 | Média |
+| Modelo | C1 | C2 | C3 | C4 | C5 | Média |
 |---|---|---|---|---|---|---|
-| QWK | 0,342 | 0,431 | 0,395 | 0,496 | 0,531 | **0,439** |
+| Original (384 tokens, 3 camadas, arredondamento simples) | 0,342 | 0,431 | 0,395 | 0,496 | 0,531 | 0,439 |
+| Final, arredondamento simples | 0,469 | 0,480 | 0,499 | 0,547 | 0,603 | 0,520 |
+| **Final, cortes calibrados** | **0,522** | **0,557** | **0,538** | **0,595** | **0,636** | **0,570** |
 
-MSE de teste: 0,0308 (na escala de 0 a 1).
+MSE de teste do modelo final: 0,0276 (na escala de 0 a 1).
 
-Como ler: um QWK de 0,44 indica uma concordância **moderada** com os corretores humanos. O modelo ordena bem as redações, mas comprime as notas para o meio. Nas redações de exemplo do site, a boa (referência 960) recebeu 720, a mediana (560) recebeu 360 e a fraca (160) recebeu 280. A competência mais difícil é a C1 (norma culta), que depende de detalhes gramaticais que o modelo não vê bem.
+Como ler: o QWK subiu de 0,44 para 0,57, uma concordância **moderada** com os corretores humanos. A maior melhora foi na C1 (norma culta, de 0,34 para 0,52), que dependia mais do texto inteiro. Na validação, os cortes calibrados chegam a 0,643, mas esse número é otimista porque os cortes foram ajustados nela. O valor honesto é o do teste.
+
+As notas também ficaram mais espalhadas. Um texto sem sentido ("palavra" repetida 40 vezes) caiu de 320 para 80 pontos. Nas 3 redações de exemplo do site (referências 960, 560 e 160), o modelo deu 720, 280 e 40: a ordem está certa, mas as redações mediana e fraca ficaram abaixo da referência.
 
 ## Funcionalidades do site
 
@@ -157,11 +185,12 @@ python -m venv venv
 venv\Scripts\activate
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
-python train.py   # treina e gera saved_model/ (uma vez, ~5 min em GPU)
-python main.py    # API em http://localhost:8000
+python train.py       # treina e gera saved_model/ (uma vez, ~11 min em GPU)
+python calibrate.py   # ajusta os cortes das notas na validação (~1 min)
+python main.py        # API em http://localhost:8000
 ```
 
-Os pesos treinados (`Back-End/saved_model/`, cerca de 436 MB) não são versionados por serem grandes. Cada integrante gera os seus com `python train.py`.
+Os pesos treinados (`Back-End/saved_model/`, cerca de 436 MB) não são versionados por serem grandes. Cada integrante gera os seus com `python train.py` e `python calibrate.py`. Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`.
 
 ### Reescrita com o Gemini
 
@@ -183,18 +212,20 @@ npm test          # testes das regras do site
 
 ## Limitações conhecidas
 
-- **Texto cortado:** 46% das redações do dataset passam de 384 tokens (11,6% passam até de 512) e perdem o final, onde fica a proposta de intervenção (C5).
-- **Notas comprimidas para o meio:** isso vem do desbalanceamento das notas e do uso de MSE como perda.
+- **Texto cortado:** mesmo com 512 tokens (o limite do BERT), 11,6% das redações perdem o final, onde fica a proposta de intervenção (C5).
+- **Notas ainda puxadas para o meio:** a calibração dos cortes melhorou isso, mas o modelo ainda é treinado com MSE em dados com poucas notas 0 e 200.
 - **Temas repetidos nos três conjuntos:** a divisão é aleatória por redação, então os mesmos temas aparecem no treino e no teste. O desempenho em temas inéditos pode ser menor.
-- **Texto sem sentido recebe nota:** um texto com uma única palavra repetida 40 vezes recebeu 320 pontos. Faltam filtros de entrada.
-- **Análise por parágrafo pouco informativa:** retirar um parágrafo costuma não mudar a nota arredondada, e em caso de empate o último parágrafo é apontado.
+- **Uma rodada por experimento:** cada configuração foi treinada com uma única semente, então diferenças pequenas entre experimentos podem ser ruído.
+- **Texto sem sentido ainda recebe nota:** caiu de 320 para 80 pontos, mas ainda faltam filtros de entrada.
+- **Análise por parágrafo pouco informativa:** retirar um parágrafo costuma não mudar a nota convertida, e em caso de empate o último parágrafo é apontado.
 - **Feedback genérico:** as mensagens são fixas por faixa de nota. Os trechos exatos vêm só das verificações por regras.
-- **Repertório da reescrita:** o Gemini pode errar fatos. Em um teste, a versão reescrita afirmou que livros têm "alta carga tributária", o que é falso.
+- **Repertório da reescrita:** o Gemini pode errar fatos. Em dois testes, a versão reescrita afirmou que livros têm "alta carga tributária", o que é falso, porque a Constituição dá imunidade tributária aos livros.
 
 ## Próximos passos
 
-- Melhorar o avaliador: descongelar mais camadas, usar mais épocas com variação da taxa de aprendizado, escolher o checkpoint pelo QWK e testar `MAX_LEN = 512`.
 - Comparar com um modelo de referência simples (TF-IDF + regressão linear) para medir o ganho do BERT.
+- Avaliar com divisão por tema (temas do teste ausentes do treino) e com várias sementes.
+- Lidar com redações maiores que 512 tokens (por exemplo, dividir em dois trechos e combinar).
 - Investigar o viés: medir se o modelo premia o tamanho do texto ou o número de conectivos sem melhora real do argumento.
 - Filtrar entradas sem sentido antes da rede.
 - Reavaliar a redação reescrita com o BERTimbau para mostrar "antes e depois".
@@ -205,6 +236,7 @@ npm test          # testes das regras do site
 ```
 Back-End/
   train.py            treino e avaliação do BERTimbau
+  calibrate.py        calibração dos cortes das notas
   main.py             API (avaliação e reescrita)
   essay-br.csv        redações e notas (Essay-BR)
   prompts.csv         textos dos temas
