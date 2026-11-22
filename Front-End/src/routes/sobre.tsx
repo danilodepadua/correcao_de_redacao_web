@@ -51,7 +51,7 @@ function Sobre() {
         <h1 className="mt-4 text-5xl font-semibold leading-tight">Uma rede neural que leu milhares de redações.</h1>
         <p className="mt-4 font-serif text-lg text-muted-foreground">
           O Nota Mil usa o BERTimbau (neuralmind/bert-base-portuguese-cased), ajustado com redações
-          reais corrigidas por especialistas, para estimar a nota em cada competência do ENEM.
+          reais corrigidas por corretores humanos, para estimar a nota em cada competência do ENEM.
         </p>
       </header>
 
@@ -81,7 +81,7 @@ function Sobre() {
         <h2 className="mt-2 text-3xl font-semibold">O que engana o modelo, e como corrigimos</h2>
         <p className="mt-2 font-serif text-lg text-muted-foreground">
           Aplicamos mudanças controladas a 914 redações fora do treino e medimos a variação média da
-          nota (de 0 a 1000). A primeira versão do modelo premiava texto repetido e citações genéricas
+          nota (de 0 a 1000). A versão anterior do modelo premiava texto repetido e citações genéricas
           e quase não percebia frases embaralhadas. A versão atual foi treinada também com cópias
           alteradas de redações, com nota menor ou igual, e esses vieses caíram muito. Manipulações que
           ficaram fora desse treino, como conectivos inseridos à força, ainda enganam um pouco. Por
