@@ -1,6 +1,8 @@
 import json
 import os
+import random
 import re
+import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from typing import List
@@ -76,6 +78,11 @@ MAX_LEN = 384
 # Configuração do Gemini (usado na reescrita da redação)
 # GEMINI_MODEL pode ser trocado no .env por qualquer modelo disponível para a sua chave
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
+
+# Backoff exponencial para falhas temporárias do Gemini (429 e 5xx)
+GEMINI_TENTATIVAS = int(os.getenv("GEMINI_TENTATIVAS") or 5)
+GEMINI_ESPERA_INICIAL = float(os.getenv("GEMINI_ESPERA_INICIAL") or 1.0)  # segundos
+GEMINI_ESPERA_MAXIMA = float(os.getenv("GEMINI_ESPERA_MAXIMA") or 16.0)  # segundos
 
 # Cortes que convertem a previsão contínua (0–200) em notas 0, 40, ..., 200.
 # Padrão: múltiplo de 40 mais próximo. Se saved_model/config.json tiver "cuts"
@@ -374,7 +381,14 @@ def obter_cliente_gemini():
                     "Back-End/.env e reinicie o servidor."
                 ),
             )
-        GEMINI_CLIENT = genai.Client(api_key=api_key)
+        # As novas tentativas são feitas por com_backoff(); o SDK tenta só uma vez,
+        # para os dois mecanismos não se somarem
+        GEMINI_CLIENT = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(
+                retry_options=genai_types.HttpRetryOptions(attempts=1)
+            ),
+        )
     return GEMINI_CLIENT
 
 
@@ -392,20 +406,50 @@ def montar_prompt_reescrita(tema: str, redacao: str, notas: dict, feedback: List
     )
 
 
+def erro_temporario(exc: Exception) -> bool:
+    """429 (limite de uso) e 5xx (sobrecarga ou falha do servidor) costumam passar sozinhos."""
+    codigo = getattr(exc, "code", None)
+    return isinstance(exc, genai_errors.APIError) and (codigo == 429 or (codigo or 0) >= 500)
+
+
+def com_backoff(funcao, tentativas=None, espera_inicial=None, espera_maxima=None,
+                dormir=time.sleep, sortear=random.uniform):
+    """Executa funcao() e, em erro temporário, tenta de novo com backoff exponencial.
+
+    A espera dobra a cada tentativa (1 s, 2 s, 4 s, 8 s, ..., até espera_maxima) e
+    recebe uma variação aleatória ("jitter": entre metade e o valor cheio), para
+    várias requisições não repetirem todas no mesmo instante. Erros permanentes
+    (chave inválida, modelo inexistente, pedido malformado) não são repetidos.
+    """
+    tentativas = tentativas or GEMINI_TENTATIVAS
+    espera_inicial = espera_inicial or GEMINI_ESPERA_INICIAL
+    espera_maxima = espera_maxima or GEMINI_ESPERA_MAXIMA
+    for n in range(tentativas):
+        try:
+            return funcao()
+        except genai_errors.APIError as exc:
+            if not erro_temporario(exc) or n == tentativas - 1:
+                raise
+            base = min(espera_maxima, espera_inicial * 2 ** n)
+            espera = sortear(base / 2, base)
+            print(f"Gemini respondeu {exc.code}; tentativa {n + 2} de {tentativas} em {espera:.1f}s")
+            dormir(espera)
+
+
 def chamar_gemini(prompt: str, instrucao: str, **config):
-    """Chama o Gemini e converte os erros da API em respostas HTTP claras."""
+    """Chama o Gemini (com backoff exponencial) e converte os erros em respostas HTTP claras."""
     cliente = obter_cliente_gemini()
     try:
-        return cliente.models.generate_content(
+        return com_backoff(lambda: cliente.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
             config=genai_types.GenerateContentConfig(system_instruction=instrucao, **config),
-        )
+        ))
     except genai_errors.ClientError as exc:
         if exc.code == 429:
             raise HTTPException(
                 status_code=429,
-                detail="Limite de uso do Gemini atingido. Aguarde um pouco e tente de novo.",
+                detail=f"Limite de uso do Gemini atingido (tentamos {GEMINI_TENTATIVAS} vezes). Aguarde um pouco e tente de novo.",
             )
         if exc.code == 404:
             raise HTTPException(
@@ -421,7 +465,7 @@ def chamar_gemini(prompt: str, instrucao: str, **config):
     except genai_errors.APIError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"O Gemini está indisponível no momento ({exc.code}). Tente novamente.",
+            detail=f"O Gemini está indisponível no momento ({exc.code}), mesmo após {GEMINI_TENTATIVAS} tentativas. Tente novamente em alguns minutos.",
         )
 
 

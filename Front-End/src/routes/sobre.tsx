@@ -18,7 +18,7 @@ const FATOS = [
   { valor: "4.570", rotulo: "redações corrigidas no Essay-BR (80% usadas no treino)" },
   { valor: "86", rotulo: "temas diferentes" },
   { valor: "5", rotulo: "notas, uma por competência" },
-  { valor: "0,57", rotulo: "QWK: concordância com os corretores em redações inéditas" },
+  { valor: "0,56", rotulo: "QWK: concordância com os corretores em redações fora do treino" },
 ];
 
 const PASSOS = [
@@ -30,14 +30,17 @@ const PASSOS = [
   ["IA generativa", "O Gemini aponta trechos com problema e reescreve a redação; a versão nova volta para o modelo."],
 ];
 
-/** Resultado do experimento de viés (Back-End/analise_vies.py), em 914 redações inéditas. */
+/**
+ * Experimento de viés (Back-End/analise_vies.py) em 914 redações fora do treino:
+ * variação média da nota (0–1000) antes (v2) e depois (v3) do treino contra vieses.
+ */
 const VIESES = [
-  { mudanca: "Repetir um parágrafo inteiro", efeito: "+33", subiu: "69%", reacao: "Viés: premia texto mais longo", ok: false },
-  { mudanca: "Colar uma citação famosa sem relação com o tema", efeito: "+31", subiu: "66%", reacao: "Viés: premia repertório genérico", ok: false },
-  { mudanca: "Pôr conectivos no início dos parágrafos", efeito: "+9", subiu: "26%", reacao: "Viés leve", ok: false },
-  { mudanca: "Embaralhar a ordem das frases", efeito: "−13", subiu: "13%", reacao: "Cai pouco: quase não vê a coerência", ok: false },
-  { mudanca: "Remover a conclusão", efeito: "−66", subiu: "2%", reacao: "Esperada (cai mais na C5)", ok: true },
-  { mudanca: "Tirar todos os acentos", efeito: "−115", subiu: "0%", reacao: "Esperada", ok: true },
+  { mudanca: "Repetir um parágrafo inteiro", antes: "+33", depois: "−55", treino: true, leitura: "Corrigido: repetição passou a tirar ponto" },
+  { mudanca: "Colar uma citação famosa sem relação com o tema", antes: "+31", depois: "+9", treino: true, leitura: "Bem menor, mas ainda ajuda um pouco" },
+  { mudanca: "Embaralhar a ordem das frases", antes: "−13", depois: "−138", treino: true, leitura: "Corrigido: agora percebe a desorganização" },
+  { mudanca: "Pôr conectivos no início dos parágrafos", antes: "+9", depois: "+6", treino: false, leitura: "Quase igual: fora do treino, o viés continua" },
+  { mudanca: "Remover a conclusão", antes: "−66", depois: "−114", treino: false, leitura: "Esperada: cai mais" },
+  { mudanca: "Tirar todos os acentos", antes: "−115", depois: "−122", treino: false, leitura: "Esperada" },
 ];
 
 function Sobre() {
@@ -75,33 +78,34 @@ function Sobre() {
 
       <section className="mt-20 max-w-4xl">
         <p className="eyebrow">Vieses conhecidos</p>
-        <h2 className="mt-2 text-3xl font-semibold">O que engana o modelo</h2>
+        <h2 className="mt-2 text-3xl font-semibold">O que engana o modelo, e como corrigimos</h2>
         <p className="mt-2 font-serif text-lg text-muted-foreground">
-          Aplicamos mudanças controladas a 914 redações que o modelo não viu no treino e medimos a
-          variação média da nota (de 0 a 1000). O modelo reage bem a erros reais, como tirar os
-          acentos ou a conclusão, mas premia texto mais longo e repertório genérico e quase não
-          percebe quando a ordem das ideias é embaralhada. Por isso o checklist do corretor e os
-          apontamentos não dependem só da nota.
+          Aplicamos mudanças controladas a 914 redações fora do treino e medimos a variação média da
+          nota (de 0 a 1000). A primeira versão do modelo premiava texto repetido e citações genéricas
+          e quase não percebia frases embaralhadas. A versão atual foi treinada também com cópias
+          alteradas de redações, com nota menor ou igual, e esses vieses caíram muito. Manipulações que
+          ficaram fora desse treino, como conectivos inseridos à força, ainda enganam um pouco. Por
+          isso o checklist do corretor e os apontamentos não dependem só da nota.
         </p>
         <div className="mt-6 overflow-x-auto">
-          <table className="w-full min-w-[28rem] text-left text-sm">
+          <table className="w-full min-w-[36rem] text-left text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border">
                 <th className="py-2 pr-4 font-medium">Mudança no texto</th>
-                <th className="py-2 pr-4 font-medium">Efeito na nota</th>
-                <th className="py-2 pr-4 font-medium">Redações com nota maior</th>
-                <th className="py-2 font-medium">Reação</th>
+                <th className="py-2 pr-4 font-medium">Antes</th>
+                <th className="py-2 pr-4 font-medium">Agora</th>
+                <th className="py-2 pr-4 font-medium">No treino?</th>
+                <th className="py-2 font-medium">Leitura</th>
               </tr>
             </thead>
             <tbody>
               {VIESES.map((v) => (
                 <tr key={v.mudanca} className="border-b border-border/60">
                   <td className="py-2 pr-4">{v.mudanca}</td>
-                  <td className="py-2 pr-4 font-semibold">{v.efeito}</td>
-                  <td className="py-2 pr-4">{v.subiu}</td>
-                  <td className={v.ok ? "py-2 text-score-great" : "py-2 text-pen"}>
-                    {v.reacao}
-                  </td>
+                  <td className="py-2 pr-4 text-muted-foreground">{v.antes}</td>
+                  <td className="py-2 pr-4 font-semibold">{v.depois}</td>
+                  <td className="py-2 pr-4">{v.treino ? "sim" : "não"}</td>
+                  <td className="py-2">{v.leitura}</td>
                 </tr>
               ))}
             </tbody>

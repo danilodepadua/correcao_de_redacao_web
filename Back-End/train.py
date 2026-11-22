@@ -16,6 +16,8 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 
+from perturbacoes import aumentar_contra_vies
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = "neuralmind/bert-base-portuguese-cased"
@@ -245,6 +247,9 @@ def parse_args():
     p.add_argument("--tema", choices=TIPOS_DE_TEMA, default="misto",
                    help="tema usado na entrada: misto (padrão) sorteia trecho do texto motivador "
                         "ou título curto, para o modelo funcionar com o título que o usuário digita")
+    p.add_argument("--aumento-vies", type=float, default=0.5,
+                   help="fração das redações de treino que ganham uma cópia alterada contra os vieses "
+                        "(perturbacoes.py); padrão 0.5 (modelo v3), 0 = desligado (modelo v2)")
     p.add_argument("--divisao", choices=TIPOS_DE_DIVISAO, default="aleatoria",
                    help="aleatoria (padrão) ou por_tema (temas de validação e teste fora do treino)")
     p.add_argument("--seed", type=int, default=42)
@@ -265,6 +270,15 @@ def main():
     X_train_t, X_train_txt, y_train = splits["train"]
     X_val_t, X_val_txt, y_val = splits["val"]
     X_test_t, X_test_txt, y_test = splits["test"]
+
+    # Aumento de dados contra os vieses: só no TREINO (validação e teste ficam intactos)
+    aumentos = {}
+    if args.aumento_vies > 0:
+        n_antes = len(X_train_txt)
+        X_train_t, X_train_txt, y_train, aumentos = aumentar_contra_vies(
+            X_train_t, X_train_txt, y_train, args.aumento_vies, seed=args.seed
+        )
+        print(f"Aumento contra vieses: {n_antes} -> {len(X_train_txt)} redações de treino {aumentos}", flush=True)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     train_dataset = EnemDataset(X_train_txt, X_train_t, y_train, tokenizer, args.max_len)
@@ -417,7 +431,8 @@ def main():
 
     # config.json: lido pela API para usar o mesmo max_len do treino
     with open(os.path.join(args.out, "config.json"), "w", encoding="utf-8") as f:
-        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME, "tema_treino": args.tema, "divisao": args.divisao}, f, indent=2)
+        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME, "tema_treino": args.tema, "divisao": args.divisao,
+                   "aumento_vies": args.aumento_vies}, f, indent=2)
     with open(os.path.join(args.out, "results.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 

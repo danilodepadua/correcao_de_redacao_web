@@ -11,6 +11,7 @@ Uso:  python gerar_temas_curtos.py   (precisa de GEMINI_API_KEY no .env)
 import ast
 import csv
 import os
+import random
 import time
 
 import pandas as pd
@@ -63,8 +64,9 @@ def main():
                 )
                 break
             except errors.ServerError as exc:  # 503: Gemini sobrecarregado, tenta de novo
-                espera = 10 * (tentativa + 1)
-                print(f"  Gemini indisponível ({exc.code}); nova tentativa em {espera}s")
+                base = min(60, 5 * 2 ** tentativa)  # backoff exponencial: 5, 10, 20, 40, 60 s
+                espera = random.uniform(base / 2, base)
+                print(f"  Gemini indisponível ({exc.code}); nova tentativa em {espera:.0f}s")
                 time.sleep(espera)
         else:
             raise SystemExit("O Gemini continuou indisponível; tente mais tarde.")
