@@ -185,12 +185,20 @@ python -m venv venv
 venv\Scripts\activate
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
-python train.py       # treina e gera saved_model/ (uma vez, ~11 min em GPU)
-python calibrate.py   # ajusta os cortes das notas na validação (~1 min)
-python main.py        # API em http://localhost:8000
+python baixar_modelo.py   # baixa o modelo já treinado (~192 MB), sem precisar treinar
+python main.py            # API em http://localhost:8000
 ```
 
-Os pesos treinados (`Back-End/saved_model/`, cerca de 436 MB) não são versionados por serem grandes. Cada integrante gera os seus com `python train.py` e `python calibrate.py`. Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`.
+Os pesos (`Back-End/saved_model/`) não ficam no git por serem grandes. O modelo final, já calibrado, está publicado na Release [`modelo-v1`](https://github.com/danilodepadua/correcao_de_redacao_web/releases/tag/modelo-v1), e o `baixar_modelo.py` baixa, confere (SHA-256) e extrai esse arquivo. Os pesos da Release estão em float16 para ocupar metade do espaço: em 914 redações de validação e teste, só 2 tiveram uma nota diferente da versão em float32.
+
+Para **treinar do zero** em vez de baixar (cerca de 12 min numa GPU):
+
+```
+python train.py       # treina e gera saved_model/
+python calibrate.py   # ajusta os cortes das notas na validação
+```
+
+Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`.
 
 ### Reescrita com o Gemini
 
@@ -237,6 +245,7 @@ npm test          # testes das regras do site
 Back-End/
   train.py            treino e avaliação do BERTimbau
   calibrate.py        calibração dos cortes das notas
+  baixar_modelo.py    baixa o modelo treinado da Release do GitHub
   main.py             API (avaliação e reescrita)
   essay-br.csv        redações e notas (Essay-BR)
   prompts.csv         textos dos temas
