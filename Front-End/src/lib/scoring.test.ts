@@ -33,6 +33,16 @@ describe("leitura do feedback do back-end", () => {
     expect(item.tipo).toBe("paragrafo");
     expect(item.paragrafo).toBe(3);
   });
+  it("lê o parágrafo no formato novo, com a variação contínua da nota", () => {
+    const item = interpretarFeedback(
+      '[Análise de Parágrafo] O 2º parágrafo ("Outro motivo é a tecnologia...") é o que menos contribui ' +
+        "para a nota: sem ele, a nota estimada subiria 12 pts, sobretudo na Competência 3. Este trecho " +
+        "está prejudicando o texto. Recomenda-se enriquecer a argumentação ou o detalhamento deste trecho.",
+    );
+    expect(item.tipo).toBe("paragrafo");
+    expect(item.paragrafo).toBe(2);
+    expect(item.competencia).toBeUndefined();
+  });
   it("marca nota 160 como 'pode melhorar'", () => {
     expect(interpretarFeedback("[Bom, mas pode melhorar - 160/200] Competência 4 (Coesão): x").tipo).toBe(
       "melhorar",

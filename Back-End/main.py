@@ -1,5 +1,7 @@
 import json
 import os
+import re
+from collections import Counter
 from contextlib import asynccontextmanager
 from typing import List
 
@@ -49,8 +51,20 @@ class EssayResponse(BaseModel):
     nota_final: int
     feedback: List[str]
 
+class NotasCompetencias(BaseModel):
+    c1_norma_culta: int
+    c2_compreensao_tema: int
+    c3_projeto_de_texto: int
+    c4_coesao: int
+    c5_proposta_intervencao: int
+    nota_final: int
+
+
 class RewriteResponse(BaseModel):
     redacao_reescrita: str
+    # Notas do BERTimbau para a redação original e para a versão reescrita
+    notas_original: NotasCompetencias
+    notas_reescrita: NotasCompetencias
 
 
 # Tamanho máximo da sequência (tema + redação) em tokens.
@@ -170,43 +184,37 @@ def gerar_diagnostico(redacao: str, notas: dict, model, tokenizer, device, tema:
         elif nota == 160:
             feedbacks.append(f"[Bom, mas pode melhorar - 160/200] {mensagem}")
 
-    # Análise de Impacto por Parágrafo
+    # Análise de impacto por parágrafo: a rede avalia o texto sem cada parágrafo.
+    # Usa a nota contínua (antes da conversão em múltiplos de 40); com a nota
+    # convertida, retirar um parágrafo quase nunca mudava nada e tudo empatava em 0.
     paragrafos = [p.strip() for p in redacao.split("\n") if p.strip()]
     if len(paragrafos) >= 2:
-        nota_base = notas["nota_final"]
-        impactos = []
+        variantes = [redacao] + [
+            "\n".join(paragrafos[:i] + paragrafos[i + 1 :]) for i in range(len(paragrafos))
+        ]
+        brutos = prever_brutos(tema, variantes)  # (1 + n, 5), escala 0–200
+        # Contribuição de cada parágrafo = quanto a nota cai quando ele é retirado
+        contribuicoes = brutos[0] - brutos[1:]  # (n, 5)
+        totais = contribuicoes.sum(axis=1)
+        i = int(np.argmin(totais))
+        total = float(totais[i])
+        comp = int(np.argmax(np.abs(contribuicoes[i]))) + 1
+        trecho = paragrafos[i][:80]
 
-        for i, p in enumerate(paragrafos):
-            texto_sem_p = "\n".join(paragrafos[:i] + paragrafos[i + 1 :])
-            inputs = tokenizer(
-                f"Tema: {tema} [SEP] Redação: {texto_sem_p}",
-                truncation=True,
-                padding="max_length",
-                max_length=MAX_LEN,
-                return_tensors="pt",
-            ).to(device)
-            with torch.no_grad():
-                out = (
-                    model(inputs["input_ids"], inputs["attention_mask"])
-                    .cpu()
-                    .numpy()[0]
-                )
-            nota_sem_p = int(np.sum(converter_notas(out)))
-
-            # Verifica qual parágrafo causou a maior queda na nota final ao ser removido
-            queda = nota_base - nota_sem_p
-            impactos.append((i + 1, p[:80], queda))
-
-        # Ordena os impactos do maior para o menor (maior queda = maior impacto)
-        impactos.sort(key=lambda x: x[2], reverse=True)
-
-        # Identifica o parágrafo com menor impacto (ou seja, que menos contribuiu para a nota final)
-        mais_fraco = impactos[-1]
-
+        if total < 0:
+            efeito = (
+                f"sem ele, a nota estimada subiria {abs(total):.0f} pts, "
+                f"sobretudo na Competência {comp}. Este trecho está prejudicando o texto"
+            )
+        else:
+            efeito = (
+                f"sem ele, a nota estimada cairia só {total:.0f} pts "
+                f"(maior efeito na Competência {comp}), o menor peso entre os parágrafos"
+            )
         feedbacks.append(
-            f'[Análise de Parágrafo] O {mais_fraco[0]}º parágrafo ("{mais_fraco[1]}...") '
-            f"apresentou menor impacto na pontuação da rede neural (variação de {mais_fraco[2]} pts). "
-            f"Recomenda-se enriquecer a argumentação ou o detalhamento deste trecho."
+            f'[Análise de Parágrafo] O {i + 1}º parágrafo ("{trecho}...") é o que menos '
+            f"contribui para a nota: {efeito}. Recomenda-se enriquecer a argumentação "
+            f"ou o detalhamento deste trecho."
         )
 
     if not len([f for f in feedbacks if "Atenção" in f or "Bom" in f]):
@@ -222,23 +230,23 @@ def health_check():
     return {"status": "online", "device": str(DEVICE)}
 
 
-def prever_notas(tema: str, redacao: str) -> dict:
-    """Roda o BERTimbau e devolve as notas por competência (múltiplos de 40) e a nota final."""
-    combined_text = f"Tema: {tema} [SEP] Redação: {redacao}"
-
+def prever_brutos(tema: str, redacoes: List[str]) -> np.ndarray:
+    """Notas contínuas (escala 0–200, sem conversão) de várias redações, num lote só."""
     inputs = TOKENIZER(
-        combined_text,
+        [f"Tema: {tema} [SEP] Redação: {r}" for r in redacoes],
         truncation=True,
         padding="max_length",
         max_length=MAX_LEN,
         return_tensors="pt",
     ).to(DEVICE)
-
     with torch.no_grad():
-        raw_outputs = (
-            MODEL(inputs["input_ids"], inputs["attention_mask"]).cpu().numpy()[0]
-        )
+        saida = MODEL(inputs["input_ids"], inputs["attention_mask"]).float().cpu().numpy()
+    return saida * 200.0
 
+
+def prever_notas(tema: str, redacao: str) -> dict:
+    """Roda o BERTimbau e devolve as notas por competência (múltiplos de 40) e a nota final."""
+    raw_outputs = prever_brutos(tema, [redacao])[0] / 200.0
     rounded = converter_notas(raw_outputs)
 
     return {
@@ -263,6 +271,51 @@ def validar_entrada(payload: EssayRequest, acao: str):
             status_code=503,
             detail="Modelo ainda não foi inicializado. Tente novamente em alguns instantes.",
         )
+
+    problema = verificar_texto(payload.redacao)
+    if problema:
+        raise HTTPException(
+            status_code=400,
+            detail=f"O texto não parece uma redação e não será {acao}: {problema}",
+        )
+
+
+# Filtro de textos sem sentido.
+# A rede neural dá nota a qualquer entrada (ex.: "palavra" repetida 40 vezes
+# recebia 320 pontos). Os limites abaixo foram escolhidos com folga em relação
+# ao pior caso das 4.570 redações do Essay-BR, para nenhuma redação real ser barrada:
+#   palavras diferentes / total      pior redação 0,338  -> barra abaixo de 0,25
+#   peso da palavra mais repetida    pior redação 12,3%  -> barra acima de 20%
+#   palavras reconhecidas (3+ letras) pior redação 55,9% -> barra abaixo de 45%
+#   fração de letras (sem espaços)   pior redação 92,8%  -> barra abaixo de 80%
+LIMITE_DIVERSIDADE = 0.25
+LIMITE_PALAVRA_REPETIDA = 0.20
+LIMITE_PALAVRAS_CONHECIDAS = 0.45
+LIMITE_LETRAS = 0.80
+
+
+def verificar_texto(redacao: str):
+    """Devolve uma explicação se o texto parecer sem sentido, ou None se estiver ok."""
+    palavras = re.findall(r"[^\W\d_]+", redacao.lower())
+    visiveis = sum(not ch.isspace() for ch in redacao)
+    if not palavras or sum(ch.isalpha() for ch in redacao) / max(1, visiveis) < LIMITE_LETRAS:
+        return "há poucas letras no texto (muitos números ou símbolos)."
+
+    contagem = Counter(palavras)
+    if len(contagem) / len(palavras) < LIMITE_DIVERSIDADE:
+        return "há pouquíssimas palavras diferentes; o texto se repete demais."
+    palavra, vezes = contagem.most_common(1)[0]
+    if vezes / len(palavras) > LIMITE_PALAVRA_REPETIDA:
+        return f'a palavra "{palavra}" ocupa {100 * vezes / len(palavras):.0f}% do texto.'
+
+    longas = [p for p in palavras if len(p) >= 3]
+    if longas:
+        conhecidas = sum(1 for p in longas if len(TOKENIZER.tokenize(p)) == 1) / len(longas)
+    else:
+        conhecidas = 0.0
+    if conhecidas < LIMITE_PALAVRAS_CONHECIDAS:
+        return "a maioria das palavras não foi reconhecida como português."
+    return None
 
 
 @app.post("/api/v1/avaliar", response_model=EssayResponse)
@@ -290,6 +343,7 @@ Regras:
 - Use conectivos variados entre e dentro dos parágrafos e evite repetir palavras.
 - Use apenas repertório sociocultural verdadeiro e amplamente conhecido (leis,
   obras, pensadores, fatos históricos). Não invente dados, números, pesquisas ou citações.
+  Na dúvida sobre um fato (por exemplo, impostos, estatísticas ou datas), não o use.
 - Termine com uma proposta de intervenção completa: agente, ação, meio/modo,
   finalidade e detalhamento, respeitando os direitos humanos.
 - Não acrescente palavras ou expressões só porque costumam "dar nota": cada
@@ -338,26 +392,14 @@ def montar_prompt_reescrita(tema: str, redacao: str, notas: dict, feedback: List
     )
 
 
-@app.post("/api/v1/reescrever", response_model=RewriteResponse)
-def reescrever_redacao(payload: EssayRequest):
-    validar_entrada(payload, "reescrita")
+def chamar_gemini(prompt: str, instrucao: str, **config):
+    """Chama o Gemini e converte os erros da API em respostas HTTP claras."""
     cliente = obter_cliente_gemini()
-
-    # As notas e o diagnóstico do BERTimbau guiam o que o Gemini deve corrigir
-    notas = prever_notas(payload.tema, payload.redacao)
-    feedback = gerar_diagnostico(
-        payload.redacao, notas, MODEL, TOKENIZER, DEVICE, payload.tema
-    )
-    prompt = montar_prompt_reescrita(payload.tema, payload.redacao, notas, feedback)
-
     try:
-        resposta = cliente.models.generate_content(
+        return cliente.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=INSTRUCAO_REESCRITA,
-                temperature=0.7,
-            ),
+            config=genai_types.GenerateContentConfig(system_instruction=instrucao, **config),
         )
     except genai_errors.ClientError as exc:
         if exc.code == 429:
@@ -382,13 +424,113 @@ def reescrever_redacao(payload: EssayRequest):
             detail=f"O Gemini está indisponível no momento ({exc.code}). Tente novamente.",
         )
 
+
+@app.post("/api/v1/reescrever", response_model=RewriteResponse)
+def reescrever_redacao(payload: EssayRequest):
+    validar_entrada(payload, "reescrita")
+    obter_cliente_gemini()  # falha cedo, antes de rodar o modelo, se não houver chave
+
+    # As notas e o diagnóstico do BERTimbau guiam o que o Gemini deve corrigir
+    notas = prever_notas(payload.tema, payload.redacao)
+    feedback = gerar_diagnostico(
+        payload.redacao, notas, MODEL, TOKENIZER, DEVICE, payload.tema
+    )
+    prompt = montar_prompt_reescrita(payload.tema, payload.redacao, notas, feedback)
+    resposta = chamar_gemini(prompt, INSTRUCAO_REESCRITA, temperature=0.7)
+
     texto = (resposta.text or "").strip()
     if not texto:
         raise HTTPException(
             status_code=502,
             detail="O Gemini não devolveu texto (a resposta pode ter sido bloqueada). Tente novamente.",
         )
-    return {"redacao_reescrita": texto}
+
+    # Reavalia a versão reescrita com o mesmo modelo, para mostrar "antes e depois"
+    return {
+        "redacao_reescrita": texto,
+        "notas_original": notas,
+        "notas_reescrita": prever_notas(payload.tema, texto),
+    }
+
+
+# Apontamento de trechos com problema (Gemini)
+class Apontamento(BaseModel):
+    competencia: int
+    trecho: str
+    problema: str
+    sugestao: str
+
+
+class ApontamentosResponse(BaseModel):
+    apontamentos: List[Apontamento]
+    descartados: int
+
+
+INSTRUCAO_APONTAMENTOS = """Você é um corretor experiente de redações do ENEM.
+Leia a redação do estudante e aponte os trechos concretos que fazem a redação perder
+pontos, indicando a competência afetada:
+1 = norma culta (gramática, ortografia, pontuação, concordância, regência, informalidade)
+2 = compreensão do tema e repertório sociocultural
+3 = seleção e organização dos argumentos (projeto de texto)
+4 = coesão (conectivos, repetições, retomadas)
+5 = proposta de intervenção (agente, ação, meio/modo, finalidade, detalhamento)
+
+Regras:
+- "trecho" deve ser uma cópia EXATA de um pedaço curto do texto do estudante (de
+  3 a 25 palavras), sem alterar nenhuma letra, acento ou pontuação.
+- "problema" explica em uma frase o que está errado; "sugestao" mostra como corrigir
+  (de preferência reescrevendo o trecho).
+- Aponte de 3 a 8 problemas, os mais importantes primeiro. Não aponte problemas
+  inexistentes só para completar a lista.
+- Julgue o conteúdo e a forma, não a presença de palavras ou expressões "da moda".
+- Ao sugerir repertório, cite só fatos de que tenha certeza. Não sugira dados,
+  números, leis ou impostos que você não saiba que são verdadeiros.
+- Escreva em português."""
+
+
+def normalizar(texto: str) -> str:
+    return " ".join(texto.split()).lower()
+
+
+@app.post("/api/v1/apontar", response_model=ApontamentosResponse)
+def apontar_problemas(payload: EssayRequest):
+    validar_entrada(payload, "analisada")
+    obter_cliente_gemini()
+
+    notas = prever_notas(payload.tema, payload.redacao)
+    linhas_notas = "\n".join(
+        f"- {nome}: {notas[chave]}/200" for chave, nome in NOMES_COMPETENCIAS.items()
+    )
+    prompt = (
+        f"Tema da redação: {payload.tema or '(não informado)'}\n\n"
+        f"Notas estimadas pela rede neural (use só como referência):\n{linhas_notas}\n\n"
+        f"Redação do estudante:\n<<<\n{payload.redacao}\n>>>"
+    )
+    resposta = chamar_gemini(
+        prompt,
+        INSTRUCAO_APONTAMENTOS,
+        temperature=0.2,
+        response_mime_type="application/json",
+        response_schema=list[Apontamento],
+    )
+
+    itens = resposta.parsed
+    if itens is None:
+        try:
+            itens = [Apontamento(**d) for d in json.loads(resposta.text or "[]")]
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=502,
+                detail="O Gemini devolveu uma resposta em formato inesperado. Tente novamente.",
+            )
+
+    # Só mantém trechos que existem de fato no texto (o modelo pode inventar citações)
+    texto_norm = normalizar(payload.redacao)
+    validos = [
+        a for a in itens
+        if 1 <= a.competencia <= 5 and a.trecho.strip() and normalizar(a.trecho) in texto_norm
+    ]
+    return {"apontamentos": validos, "descartados": len(itens) - len(validos)}
 
 
 if __name__ == "__main__":

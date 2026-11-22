@@ -10,7 +10,7 @@ export const Route = createFileRoute("/exemplos")({
   head: () => ({
     meta: [
       { title: "Exemplos de redações boas e ruins — Nota Mil" },
-      { name: "description", content: "Compare redações nota alta e nota baixa no ENEM e entenda o que muda a nota." },
+      { name: "description", content: "Redações reais do Essay-BR com nota alta, média e baixa, com as notas dos corretores e o que muda a nota." },
       { property: "og:title", content: "Exemplos de redações boas e ruins — Nota Mil" },
       { property: "og:description", content: "Redações comentadas, competência por competência." },
       { property: "og:type", content: "article" },
@@ -31,10 +31,12 @@ function Exemplos() {
     <div className="mx-auto max-w-6xl px-4 sm:px-6">
       <header className="max-w-3xl pb-6 pt-14 md:pt-20">
         <p className="eyebrow">Exemplos comentados</p>
-        <h1 className="mt-4 text-5xl font-semibold leading-tight">O que separa um 960 de um 160.</h1>
+        <h1 className="mt-4 text-5xl font-semibold leading-tight">O que separa um 960 de um 240.</h1>
         <p className="mt-4 font-serif text-lg text-muted-foreground">
-          Três redações sobre o mesmo tema, com notas de referência e os comentários de um corretor.
-          Abra qualquer uma no corretor para ver o diagnóstico completo.
+          Três redações reais do Essay-BR, a base usada para treinar o modelo, com as notas dadas
+          por corretores humanos. O texto está como o estudante escreveu, com os erros originais. Os
+          comentários são da equipe e explicam as notas. Abra qualquer uma no corretor para comparar
+          com a nota do modelo.
         </p>
       </header>
 
@@ -45,6 +47,9 @@ function Exemplos() {
               <p className={cn("eyebrow", ROTULO[ex.qualidade].cor)}>{ROTULO[ex.qualidade].texto}</p>
               <h2 className="mt-2 text-3xl font-semibold">{ex.titulo}</h2>
               <p className="mt-1 text-sm text-muted-foreground">Tema: {ex.tema}</p>
+              <p className="text-xs text-muted-foreground">
+                Fonte: {ex.fonte} · nota dos corretores humanos
+              </p>
               <div className="ruled-paper paper-shadow mt-6 whitespace-pre-line rounded-md">
                 {ex.redacao}
               </div>

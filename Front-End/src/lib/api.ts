@@ -12,7 +12,14 @@ export type EssayResponse = {
   feedback: string[];
 };
 
-export type RewriteResponse = { redacao_reescrita: string };
+export type Notas = Omit<EssayResponse, "feedback">;
+
+export type RewriteResponse = {
+  redacao_reescrita: string;
+  /** Notas do modelo para a redação original e para a versão reescrita. */
+  notas_original?: Notas;
+  notas_reescrita?: Notas;
+};
 
 export type HealthResponse = { status: string; device: string };
 
@@ -87,6 +94,23 @@ export function avaliarRedacao(payload: EssayRequest) {
 
 export function reescreverRedacao(payload: EssayRequest) {
   return request<RewriteResponse>("/api/v1/reescrever", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export type Apontamento = {
+  competencia: number;
+  /** Cópia exata de um pedaço do texto do estudante. */
+  trecho: string;
+  problema: string;
+  sugestao: string;
+};
+
+export type ApontamentosResponse = { apontamentos: Apontamento[]; descartados: number };
+
+export function apontarProblemas(payload: EssayRequest) {
+  return request<ApontamentosResponse>("/api/v1/apontar", {
     method: "POST",
     body: JSON.stringify(payload),
   });

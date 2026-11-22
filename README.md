@@ -74,14 +74,21 @@ Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados
 - **Métrica:** QWK (*Quadratic Weighted Kappa*), a métrica padrão de correção automática de redações. Ela mede a concordância com as notas humanas e pune mais os erros grandes. Vale 1 para concordância perfeita e 0 para concordância ao acaso.
 - **Código:** `Back-End/train.py` (treino; todos os hiperparâmetros podem ser passados por linha de comando, veja `python train.py --help`) e `Back-End/calibrate.py` (calibração).
 
-### 2. Reescrita: Gemini (modelo pronto, via API)
+### 2. Apontamentos e reescrita: Gemini (modelo pronto, via API)
 
-A reescrita usa o Gemini (`gemini-3.5-flash-lite` por padrão). Antes, a redação passa pelo BERTimbau, e as notas e o diagnóstico entram no prompt, para que a reescrita corrija os pontos que o avaliador apontou. As instruções pedem ao Gemini que:
+O Gemini (`gemini-3.5-flash-lite` por padrão) é usado em duas funções, sempre junto com o BERTimbau:
+
+- **Apontar trechos com problema** (`/api/v1/apontar`): devolve, em JSON estruturado, trechos copiados do texto com a competência afetada, o problema e uma sugestão. A API descarta qualquer trecho que não exista de fato na redação, porque o modelo pode inventar citações.
+- **Reescrever a redação** (`/api/v1/reescrever`): as notas e o diagnóstico do BERTimbau entram no prompt, para que a reescrita corrija os pontos apontados. Depois, a versão reescrita é **reavaliada pelo BERTimbau**, e o site mostra a nota "antes → depois" por competência.
+
+As instruções pedem ao Gemini que:
 
 - mantenha as ideias do autor;
-- não invente dados nem citações;
+- não invente dados nem citações, e não use fatos de que não tenha certeza;
 - faça uma proposta de intervenção completa;
 - não acrescente expressões só porque costumam "dar nota".
+
+Mesmo assim, o Gemini às vezes erra fatos (veja as limitações), e o site avisa que o repertório gerado deve ser conferido.
 
 ### 3. Verificações por regras (sem aprendizado)
 
@@ -94,6 +101,11 @@ O site também confere o texto com regras fixas:
 - os 5 elementos da proposta de intervenção.
 
 Essas regras apontam trechos exatos do texto, o que a rede neural sozinha não faz.
+
+### 4. Filtro de entrada e análise por parágrafo
+
+- **Filtro de textos sem sentido:** antes da rede, a API recusa textos com poucas palavras diferentes, uma palavra dominante, palavras que o vocabulário do BERTimbau não reconhece ou poucas letras. Os limites foram escolhidos com folga em relação ao pior caso das 4.570 redações do Essay-BR, e nenhuma delas é barrada. Antes, "palavra" repetida 40 vezes recebia nota.
+- **Análise por parágrafo:** o modelo avalia o texto sem cada parágrafo, num lote só, e mede a variação da nota contínua (antes da conversão em múltiplos de 40). O parágrafo que menos contribui é apontado, junto com a competência em que ele mais pesa e com o aviso de quando retirá-lo faria a nota subir. Antes, a comparação usava a nota convertida, que quase nunca mudava, e todos os parágrafos empatavam em 0.
 
 ## Resultados
 
@@ -135,19 +147,46 @@ MSE de teste do modelo final: 0,0276 (na escala de 0 a 1).
 
 Como ler: o QWK subiu de 0,44 para 0,57, uma concordância **moderada** com os corretores humanos. A maior melhora foi na C1 (norma culta, de 0,34 para 0,52), que dependia mais do texto inteiro. Na validação, os cortes calibrados chegam a 0,643, mas esse número é otimista porque os cortes foram ajustados nela. O valor honesto é o do teste.
 
-As notas também ficaram mais espalhadas. Um texto sem sentido ("palavra" repetida 40 vezes) caiu de 320 para 80 pontos. Nas 3 redações de exemplo do site (referências 960, 560 e 160), o modelo deu 720, 280 e 40: a ordem está certa, mas as redações mediana e fraca ficaram abaixo da referência.
+As notas também ficaram mais espalhadas: um texto sem sentido ("palavra" repetida 40 vezes) caiu de 320 para 80 pontos (e hoje é recusado pelo filtro de entrada). Nas 3 redações reais da página de exemplos (notas humanas 960, 520 e 240, escolhidas pela nota, pelo tamanho e por não terem correções embutidas, antes de ver a nota do modelo), o modelo deu 840, 520 e 240. São só 3 casos; a medida confiável é o QWK de teste.
+
+## Análise de viés: o que engana o modelo
+
+Um dos objetivos é reconhecer o que realmente eleva o nível de uma redação sem cair no viés do modelo. Para isso, o script `Back-End/analise_vies.py` aplica mudanças controladas às 914 redações de validação e teste e mede como a nota prevista reage. Cada mudança só é medida nas redações em que o texto alterado ainda cabe inteiro em 512 tokens, para não confundir com o corte.
+
+| Mudança no texto | Tipo | n | Δ nota (0–1000) | C1 | C2 | C3 | C4 | C5 | Nota final subiu |
+|---|---|---|---|---|---|---|---|---|---|
+| Conectivos no início dos parágrafos | superficial | 603 | +10,5 | +0,8 | +1,8 | +1,7 | +3,1 | +3,2 | 29% |
+| Repetir um parágrafo inteiro | superficial | 353 | **+35,5** | +3,4 | +8,7 | +7,7 | +8,9 | +6,8 | **69%** |
+| Citação famosa sem relação com o tema | superficial | 533 | **+30,9** | +3,9 | +7,1 | +6,0 | +6,9 | +7,0 | **66%** |
+| Tirar todos os acentos | piora | 489 | −85,2 | −18,7 | −22,6 | −15,4 | −15,1 | −13,4 | 1% |
+| Embaralhar a ordem das frases | piora | 639 | **−9,1** | −2,4 | −0,3 | −0,9 | −3,1 | −2,5 | 13% |
+| Remover a conclusão | piora | 631 | −60,1 | −4,4 | −11,3 | −12,5 | −13,5 | −18,4 | 1% |
+
+Δ é a variação média da nota contínua. A última coluna é a fração de redações cuja nota final (já convertida) aumentou.
+
+O que isso mostra:
+
+- **Vieses:** o modelo premia **texto mais longo** (repetir um parágrafo, sem nenhuma ideia nova, aumenta a nota de 69% das redações) e **repertório genérico** (uma citação de Aristóteles sem relação com o tema aumenta a de 66%). Conectivos inseridos mecanicamente também ajudam um pouco.
+- **Ponto cego:** embaralhar as frases quase não muda a nota (−9). O modelo enxerga o vocabulário, mas pouco a coerência e a ordem das ideias.
+- **Reações corretas:** tirar os acentos derruba a nota (−85), e remover a conclusão também (−60), com a maior queda na C5, como esperado.
+
+Como o site lida com isso: as verificações por regras e os apontamentos do Gemini não dependem da nota da rede. As instruções do Gemini proíbem acrescentar expressões só porque "dão nota". A página "O modelo" mostra essa tabela ao usuário. Uma forma de reduzir esses vieses no treino seria usar exemplos alterados desse jeito, com nota menor, como dados extras (veja os próximos passos).
+
+Para refazer a análise: `python analise_vies.py` (cerca de 1 minuto numa GPU; grava `saved_model/analise_vies.json`).
 
 ## Funcionalidades do site
 
 | Funcionalidade | Situação |
 |---|---|
 | Avaliar uma redação: 5 notas, nota final e diagnóstico por competência | Pronto |
-| Análise de impacto por parágrafo (nota do texto sem cada parágrafo) | Pronto, mas pouco informativa (ver limitações) |
+| Recusar textos sem sentido antes da rede | Pronto |
+| Análise de impacto por parágrafo (variação contínua da nota) | Pronto |
 | Redação anotada e checklist do corretor (regras) | Pronto |
-| Exemplos de redações boa, mediana e fraca | Pronto (textos escritos para o site) |
-| Página de dicas e página sobre o modelo | Pronto |
-| Reescrever a redação com o Gemini | Pronto |
-| Reconhecer características que elevam o nível, evitando viés | A fazer |
+| Trechos com problema apontados pelo Gemini, com competência e sugestão | Pronto |
+| Exemplos de redações boa, mediana e fraca | Pronto (redações reais do Essay-BR, com as notas humanas) |
+| Página de dicas e página sobre o modelo (com a tabela de vieses) | Pronto |
+| Reescrever a redação com o Gemini e reavaliar a nova versão | Pronto |
+| Reconhecer características que elevam o nível, evitando viés | Feito como análise: experimento de viés (abaixo) e regras que não dependem da nota |
 
 Páginas: **Corrigir** (`/`), **Exemplos** (`/exemplos`), **Dicas** (`/dicas`) e **O modelo** (`/sobre`). O endereço da API pode ser trocado no próprio site, em "Servidor".
 
@@ -156,11 +195,13 @@ Páginas: **Corrigir** (`/`), **Exemplos** (`/exemplos`), **Dicas** (`/dicas`) e
 ```
 Navegador (Front-End: React + TanStack Start, porta 8080)
    │  POST /api/v1/avaliar     { tema, redacao }
+   │  POST /api/v1/apontar     { tema, redacao }
    │  POST /api/v1/reescrever  { tema, redacao }
    ▼
 API (Back-End: FastAPI, porta 8000)
-   ├── BERTimbau ajustado (saved_model/) → 5 notas + diagnóstico
-   └── Gemini (API do Google)            → redação reescrita
+   ├── filtro de textos sem sentido
+   ├── BERTimbau ajustado (saved_model/) → 5 notas + diagnóstico + análise por parágrafo
+   └── Gemini (API do Google)            → trechos com problema, redação reescrita
 ```
 
 ### Endpoints da API
@@ -169,9 +210,10 @@ API (Back-End: FastAPI, porta 8000)
 |---|---|---|---|
 | GET | `/` | | `{status, device}` |
 | POST | `/api/v1/avaliar` | `{tema, redacao}` | `c1_norma_culta` … `c5_proposta_intervencao`, `nota_final`, `feedback` |
-| POST | `/api/v1/reescrever` | `{tema, redacao}` | `{redacao_reescrita}` |
+| POST | `/api/v1/apontar` | `{tema, redacao}` | `{apontamentos: [{competencia, trecho, problema, sugestao}], descartados}` |
+| POST | `/api/v1/reescrever` | `{tema, redacao}` | `{redacao_reescrita, notas_original, notas_reescrita}` |
 
-A redação precisa ter pelo menos 30 palavras. Com a API rodando, a documentação interativa fica em http://localhost:8000/docs.
+A redação precisa ter pelo menos 30 palavras e passar pelo filtro de textos sem sentido (senão a API responde 400 com o motivo). Com a API rodando, a documentação interativa fica em http://localhost:8000/docs.
 
 ## Como rodar
 
@@ -224,20 +266,22 @@ npm test          # testes das regras do site
 - **Notas ainda puxadas para o meio:** a calibração dos cortes melhorou isso, mas o modelo ainda é treinado com MSE em dados com poucas notas 0 e 200.
 - **Temas repetidos nos três conjuntos:** a divisão é aleatória por redação, então os mesmos temas aparecem no treino e no teste. O desempenho em temas inéditos pode ser menor.
 - **Uma rodada por experimento:** cada configuração foi treinada com uma única semente, então diferenças pequenas entre experimentos podem ser ruído.
-- **Texto sem sentido ainda recebe nota:** caiu de 320 para 80 pontos, mas ainda faltam filtros de entrada.
-- **Análise por parágrafo pouco informativa:** retirar um parágrafo costuma não mudar a nota convertida, e em caso de empate o último parágrafo é apontado.
-- **Feedback genérico:** as mensagens são fixas por faixa de nota. Os trechos exatos vêm só das verificações por regras.
-- **Repertório da reescrita:** o Gemini pode errar fatos. Em dois testes, a versão reescrita afirmou que livros têm "alta carga tributária", o que é falso, porque a Constituição dá imunidade tributária aos livros.
+- **Vieses do modelo:** premia texto longo e repertório genérico e quase não percebe a coerência (veja a análise de viés).
+- **Correções embutidas no dataset:** em parte das redações, as correções do corretor humano aparecem misturadas ao texto, logo depois do erro (ex.: "o brasil Brasil", "substancias substâncias"). Uma busca simples (palavra seguida dela mesma com outro acento ou maiúscula) encontrou 62 redações (1,4%) com 3 ou mais casos, concentradas nos temas 0 a 12, 20 e 42. O modelo pode estar aprendendo com o texto já corrigido.
+- **Filtro de entrada simples:** barra repetição, letras soltas e palavras desconhecidas, mas um texto em português correto e fora do tema passa.
+- **Análise por parágrafo:** retirar um parágrafo mede o quanto ele pesa para o modelo, não se ele está bom; com os vieses acima, parágrafos longos tendem a "contribuir" mais.
+- **Mensagens por competência genéricas:** as mensagens do diagnóstico da rede continuam fixas por faixa de nota. Os trechos específicos vêm das regras e dos apontamentos do Gemini.
+- **Repertório da reescrita:** o Gemini pode errar fatos. Em dois testes, a versão reescrita afirmou que livros têm "alta carga tributária", o que é falso, porque a Constituição dá imunidade tributária aos livros e ao papel usado para imprimi-los. O erro se repetiu mesmo depois de a instrução pedir para não usar fatos incertos. Por isso o site mostra um aviso junto da reescrita e dos apontamentos.
 
 ## Próximos passos
 
 - Comparar com um modelo de referência simples (TF-IDF + regressão linear) para medir o ganho do BERT.
 - Avaliar com divisão por tema (temas do teste ausentes do treino) e com várias sementes.
 - Lidar com redações maiores que 512 tokens (por exemplo, dividir em dois trechos e combinar).
-- Investigar o viés: medir se o modelo premia o tamanho do texto ou o número de conectivos sem melhora real do argumento.
-- Filtrar entradas sem sentido antes da rede.
-- Reavaliar a redação reescrita com o BERTimbau para mostrar "antes e depois".
-- Trocar os exemplos do site por redações reais do Essay-BR.
+- Reduzir os vieses no treino: acrescentar versões alteradas das redações (parágrafo repetido, frases embaralhadas, citação sem relação) com nota menor.
+- Limpar as correções embutidas no dataset e medir o efeito no modelo.
+- Verificar se a redação fala do tema (por exemplo, comparando com o texto da proposta) e incluir isso no filtro.
+- Testar um modelo do Gemini maior (`gemini-3.5-flash`) para ver se os erros de repertório diminuem.
 
 ## Estrutura do repositório
 
@@ -246,6 +290,7 @@ Back-End/
   train.py            treino e avaliação do BERTimbau
   calibrate.py        calibração dos cortes das notas
   baixar_modelo.py    baixa o modelo treinado da Release do GitHub
+  analise_vies.py     experimento de viés (mudanças controladas no texto)
   main.py             API (avaliação e reescrita)
   essay-br.csv        redações e notas (Essay-BR)
   prompts.csv         textos dos temas

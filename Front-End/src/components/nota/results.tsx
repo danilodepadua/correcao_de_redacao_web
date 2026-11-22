@@ -8,6 +8,7 @@ import { FeedbackList } from "./feedback-list";
 import { ChecksList } from "./checks-list";
 import { AnnotatedEssay } from "./annotated-essay";
 import { RewritePanel } from "./rewrite-panel";
+import { PointersPanel } from "./pointers-panel";
 
 export function Results({
   resultado,
@@ -78,6 +79,8 @@ export function Results({
           <ChecksList itens={checks} />
         </div>
       </div>
+
+      <PointersPanel key={`${tema}\n${redacao}`} tema={tema} redacao={redacao} />
 
       <RewritePanel tema={tema} redacao={redacao} onAvaliar={onAvaliar} />
     </section>

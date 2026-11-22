@@ -160,7 +160,7 @@ function Index() {
           {!redacao && (
             <Link
               to="/"
-              search={{ exemplo: "leitura-mediana" }}
+              search={{ exemplo: "analfabetismo-mediana" }}
               className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-ink"
             >
               Testar com uma redação de exemplo <ArrowRight className="size-4" />
