@@ -80,6 +80,7 @@ def main():
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
     max_len = int(config.get("max_len", MAX_LEN))
+    divisao = config.get("divisao", "aleatoria")  # a mesma usada no treino
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     from transformers import AutoTokenizer
@@ -89,7 +90,7 @@ def main():
     model.load_state_dict(torch.load(os.path.join(args.model_dir, "model_weights.pt"),
                                      map_location=device, weights_only=True))
 
-    splits = load_splits(tema=args.tema)
+    splits = load_splits(tema=args.tema, divisao=divisao)
     loaders = {
         nome: DataLoader(EnemDataset(txt, temas, y, tokenizer, max_len), batch_size=16)
         for nome, (temas, txt, y) in splits.items() if nome in ("val", "test")

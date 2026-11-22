@@ -28,6 +28,8 @@ def main():
     cfg_path = os.path.join(args.model_dir, "config.json")
     cfg = json.load(open(cfg_path, encoding="utf-8")) if os.path.exists(cfg_path) else {}
     max_len = int(cfg.get("max_len", MAX_LEN))
+    divisao = cfg.get("divisao", "aleatoria")  # a mesma usada no treino
+    print(f"Divisão dos dados: {divisao}")
     cuts = cfg.get("cuts") or [DEFAULT_CUTS] * 5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,7 +40,7 @@ def main():
 
     resultados = {}
     for tema in ("trecho", "curto", "vazio"):
-        temas, textos, y = load_splits(tema=tema)["test"]
+        temas, textos, y = load_splits(tema=tema, divisao=divisao)["test"]
         loader = DataLoader(EnemDataset(textos, temas, y, tok, max_len), batch_size=16)
         p, yt = predict(model, loader, device)
         por_comp = [qwk(yt[:, i], apply_cuts(p[:, i], cuts[i])) for i in range(5)]

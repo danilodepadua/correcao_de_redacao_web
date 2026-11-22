@@ -52,7 +52,7 @@ Arquivos usados:
 
 As notas se concentram em 120 e 160 em todas as competências. Notas 0 e 200 são raras: em C1, por exemplo, só 97 redações têm 0 e 122 têm 200. Esse desbalanceamento faz o modelo tender a prever notas intermediárias.
 
-Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados com `random_state=42`.
+Divisão: 80% treino (3.656), 10% validação (457) e 10% teste (457), sorteados com `random_state=42`. Nessa divisão aleatória, os mesmos temas aparecem nos três conjuntos. Para medir o desempenho em temas que o modelo nunca viu, também usamos uma **divisão por tema** (`--divisao por_tema`): 68 temas no treino (3.730 redações), 9 na validação (414) e 9 no teste (426), sem temas em comum (veja "Generalização para temas inéditos").
 
 ## Modelos
 
@@ -183,6 +183,24 @@ Para medir o ganho da rede neural, treinamos um modelo de referência clássico 
 
 O BERTimbau ganha em todas as competências (+0,057 na média). A maior diferença está na C2 (tema e repertório, +0,085) e na C1 (norma culta, +0,069). O ganho é real, mas moderado: um modelo de palavras e caracteres já captura boa parte do sinal, o que é coerente com a análise de viés (o BERTimbau também presta mais atenção ao vocabulário do que à organização das ideias). Com o trecho do texto motivador como tema, o TF-IDF chega a 0,535.
 
+### Generalização para temas inéditos
+
+Na divisão aleatória, os temas do teste também estão no treino, e vimos que o modelo usa o tema como atalho. Para medir o desempenho com um tema novo (o caso de um estudante que treina com uma proposta que não está no Essay-BR), treinamos e avaliamos os dois modelos com a **divisão por tema**, em que os 9 temas do teste não aparecem no treino. As condições são as mesmas de antes: tema misto no treino, cortes calibrados na validação (também com temas inéditos) e teste com título curto.
+
+| Modelo (teste, título curto, cortes calibrados) | Temas já vistos (divisão aleatória) | **Temas inéditos** | Queda |
+|---|---|---|---|
+| TF-IDF + Ridge | 0,514 | **0,338** | −0,176 |
+| **BERTimbau ajustado** | 0,571 | **0,520** | −0,051 |
+
+QWK do BERTimbau com temas inéditos, por competência: C1 0,433 · C2 0,598 · C3 0,507 · C4 0,573 · C5 0,488.
+
+- **O BERTimbau generaliza muito melhor.** O TF-IDF perde um terço do desempenho quando o tema é novo, porque depende muito das palavras típicas de cada tema. O BERTimbau perde pouco, e a vantagem dele sobre o modelo clássico sobe de +0,06 para **+0,18**. É o principal argumento a favor da rede neural neste problema.
+- **Expectativa realista no uso:** com um tema fora do Essay-BR, o QWK esperado é de cerca de 0,52, e não 0,57.
+- **Menos dependência do tema:** sem tema, esse modelo cai só de 0,52 para 0,48, contra 0,57 → 0,43 no modelo treinado com a divisão aleatória. Quando o tema não pode ser decorado, o modelo aprende mais com o texto.
+- **Ressalva:** é uma única divisão, com 9 temas no teste, e o resultado varia com os temas sorteados (na validação, com outros 9 temas, o QWK foi 0,49). Os números estão em `Back-End/resultados_tema_inedito.json`.
+
+O modelo publicado no site continua sendo o v2, treinado com a divisão aleatória, porque ele viu mais temas no treino.
+
 Nas 3 redações reais da página de exemplos (notas humanas 960, 520 e 240, escolhidas pela nota, pelo tamanho e por não terem correções embutidas, antes de ver a nota do modelo), o v2 deu 840, 520 e 40. O v1 tinha dado 840, 520 e 240. São só 3 casos; a medida confiável é o QWK de teste.
 
 ## Análise de viés: o que engana o modelo
@@ -276,7 +294,7 @@ python train.py       # treina e gera saved_model/ (tema misto, padrão)
 python calibrate.py   # ajusta os cortes das notas na validação (título curto, padrão)
 ```
 
-Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`.
+Para treinar com outra configuração, passe os parâmetros por linha de comando (por exemplo, `python train.py --max-len 384 --frozen-layers 9`) e, para experimentos, use `--out runs/<nome> --no-test`. Para medir o desempenho em temas inéditos: `python train.py --divisao por_tema --out runs/tema_inedito`, depois `python calibrate.py --model-dir runs/tema_inedito` e `python avaliar_tema.py --model-dir runs/tema_inedito` (os dois leem a divisão do `config.json`), e `python baseline_tfidf.py --divisao por_tema` para o modelo clássico.
 
 ### Reescrita com o Gemini
 
@@ -300,8 +318,8 @@ npm test          # testes das regras do site
 
 - **Texto cortado:** mesmo com 512 tokens (o limite do BERT), 11,6% das redações perdem o final, onde fica a proposta de intervenção (C5).
 - **Notas ainda puxadas para o meio:** a calibração dos cortes melhorou isso, mas o modelo ainda é treinado com MSE em dados com poucas notas 0 e 200.
-- **Temas repetidos nos três conjuntos:** a divisão é aleatória por redação, então os mesmos temas aparecem no treino e no teste. O desempenho em temas inéditos pode ser menor.
-- **Dependência do tema:** sem tema, o QWK cai de 0,57 para 0,43. O modelo usa o tema em parte como atalho (provavelmente uma "nota média por tema"), o que reforça o risco acima para temas que não estão no Essay-BR.
+- **Temas inéditos rendem menos:** os números principais usam a divisão aleatória, em que os temas do teste também estão no treino. Com temas inéditos, o QWK do BERTimbau cai de 0,571 para 0,520 (medido numa única divisão, com 9 temas no teste).
+- **Dependência do tema:** sem tema, o QWK do modelo do site cai de 0,57 para 0,43. Ele usa o tema em parte como atalho (provavelmente uma "nota média por tema").
 - **Títulos curtos gerados por IA:** os 86 títulos de `temas_curtos.csv` foram gerados pelo Gemini e não foram revisados um a um por pessoas.
 - **Uma rodada por experimento:** cada configuração foi treinada com uma única semente, então diferenças pequenas entre experimentos podem ser ruído.
 - **Vieses do modelo:** premia texto longo e repertório genérico e quase não percebe a coerência (veja a análise de viés).
@@ -313,7 +331,7 @@ npm test          # testes das regras do site
 
 ## Próximos passos
 
-- Avaliar com divisão por tema (temas do teste ausentes do treino) e com várias sementes.
+- Repetir a avaliação com temas inéditos em várias divisões (validação cruzada por tema) e com várias sementes, para ter uma margem de erro.
 - Lidar com redações maiores que 512 tokens (por exemplo, dividir em dois trechos e combinar).
 - Reduzir os vieses no treino: acrescentar versões alteradas das redações (parágrafo repetido, frases embaralhadas, citação sem relação) com nota menor.
 - Limpar as correções embutidas no dataset e medir o efeito no modelo.
@@ -330,6 +348,7 @@ Back-End/
   avaliar_tema.py     QWK do modelo com cada tipo de tema (trecho, curto, vazio)
   gerar_temas_curtos.py  gera temas_curtos.csv com o Gemini
   temas_curtos.csv    título curto de cada um dos 86 temas
+  resultados_tema_inedito.json  resultados com a divisão por tema
   baixar_modelo.py    baixa o modelo treinado da Release do GitHub
   analise_vies.py     experimento de viés (mudanças controladas no texto)
   main.py             API (avaliação e reescrita)

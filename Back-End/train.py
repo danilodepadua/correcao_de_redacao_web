@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import cohen_kappa_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
@@ -149,9 +149,10 @@ def evaluate(model, loader, criterion, device, use_amp=False):
 
 
 TIPOS_DE_TEMA = ("trecho", "curto", "vazio", "misto")
+TIPOS_DE_DIVISAO = ("aleatoria", "por_tema")
 
 
-def load_splits(seed: int = 42, tema: str = "trecho"):
+def load_splits(seed: int = 42, tema: str = "trecho", divisao: str = "aleatoria"):
     """Carrega o Essay-BR e devolve {"train"|"val"|"test": (temas, textos, notas)}.
 
     Divisão fixa 80/10/10 (random_state=42), a mesma em todos os experimentos,
@@ -162,7 +163,15 @@ def load_splits(seed: int = 42, tema: str = "trecho"):
       "curto"  — título curto do tema (temas_curtos.csv), como o usuário digita no site
       "vazio"  — sem tema
       "misto"  — sorteia, para cada redação, trecho ou título curto (50% cada)
+
+    divisao:
+      "aleatoria" — sorteia redações (80/10/10); os mesmos temas aparecem nos três conjuntos
+      "por_tema"  — sorteia temas: os temas da validação e do teste não aparecem no
+                    treino (cerca de 80/10/10 das redações), para medir o desempenho
+                    em temas inéditos
     """
+    if divisao not in TIPOS_DE_DIVISAO:
+        raise ValueError(f"divisao deve ser uma de {TIPOS_DE_DIVISAO}")
     if tema not in TIPOS_DE_TEMA:
         raise ValueError(f"tema deve ser um de {TIPOS_DE_TEMA}")
     # Carregamento e junção das redações (4570) com os temas (86)
@@ -191,13 +200,26 @@ def load_splits(seed: int = 42, tema: str = "trecho"):
             X_themes = np.where(usa_curto, curtos, trechos)
     y = np.array(df["competence"].apply(ast.literal_eval).tolist(), dtype=np.float32)
 
-    # Divisão: 80% Treino, 10% Validação, 10% Teste (fixa, para comparar experimentos)
-    X_train_t, X_temp_t, X_train_txt, X_temp_txt, y_train, y_temp = train_test_split(
-        X_themes, X_texts, y, test_size=0.20, random_state=seed
-    )
-    X_val_t, X_test_t, X_val_txt, X_test_txt, y_val, y_test = train_test_split(
-        X_temp_t, X_temp_txt, y_temp, test_size=0.50, random_state=seed
-    )
+    if divisao == "por_tema":
+        # Sorteia temas, não redações: 20% dos temas saem do treino e se dividem
+        # entre validação e teste (mesma semente, divisão fixa)
+        grupos = df["prompt"].values
+        g1 = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=seed)
+        idx_tr, idx_tmp = next(g1.split(X_texts, groups=grupos))
+        g2 = GroupShuffleSplit(n_splits=1, test_size=0.50, random_state=seed)
+        sub_val, sub_te = next(g2.split(idx_tmp, groups=grupos[idx_tmp]))
+        idx_val, idx_te = idx_tmp[sub_val], idx_tmp[sub_te]
+        X_train_t, X_train_txt, y_train = X_themes[idx_tr], X_texts[idx_tr], y[idx_tr]
+        X_val_t, X_val_txt, y_val = X_themes[idx_val], X_texts[idx_val], y[idx_val]
+        X_test_t, X_test_txt, y_test = X_themes[idx_te], X_texts[idx_te], y[idx_te]
+    else:
+        # Divisão: 80% Treino, 10% Validação, 10% Teste (fixa, para comparar experimentos)
+        X_train_t, X_temp_t, X_train_txt, X_temp_txt, y_train, y_temp = train_test_split(
+            X_themes, X_texts, y, test_size=0.20, random_state=seed
+        )
+        X_val_t, X_test_t, X_val_txt, X_test_txt, y_val, y_test = train_test_split(
+            X_temp_t, X_temp_txt, y_temp, test_size=0.50, random_state=seed
+        )
     return {
         "train": (X_train_t, X_train_txt, y_train),
         "val": (X_val_t, X_val_txt, y_val),
@@ -223,6 +245,8 @@ def parse_args():
     p.add_argument("--tema", choices=TIPOS_DE_TEMA, default="misto",
                    help="tema usado na entrada: misto (padrão) sorteia trecho do texto motivador "
                         "ou título curto, para o modelo funcionar com o título que o usuário digita")
+    p.add_argument("--divisao", choices=TIPOS_DE_DIVISAO, default="aleatoria",
+                   help="aleatoria (padrão) ou por_tema (temas de validação e teste fora do treino)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default="./saved_model", help="pasta onde o modelo é salvo")
     p.add_argument("--no-test", action="store_true",
@@ -237,7 +261,7 @@ def main():
     use_amp = args.amp and device.type == "cuda"
     print(f"Configuração: {vars(args)}", flush=True)
 
-    splits = load_splits(tema=args.tema)
+    splits = load_splits(tema=args.tema, divisao=args.divisao)
     X_train_t, X_train_txt, y_train = splits["train"]
     X_val_t, X_val_txt, y_val = splits["val"]
     X_test_t, X_test_txt, y_test = splits["test"]
@@ -393,7 +417,7 @@ def main():
 
     # config.json: lido pela API para usar o mesmo max_len do treino
     with open(os.path.join(args.out, "config.json"), "w", encoding="utf-8") as f:
-        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME, "tema_treino": args.tema}, f, indent=2)
+        json.dump({"max_len": args.max_len, "model_name": MODEL_NAME, "tema_treino": args.tema, "divisao": args.divisao}, f, indent=2)
     with open(os.path.join(args.out, "results.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 

@@ -15,7 +15,7 @@ export const Route = createFileRoute("/sobre")({
 });
 
 const FATOS = [
-  { valor: "4.570", rotulo: "redações corrigidas no treino (Essay-BR)" },
+  { valor: "4.570", rotulo: "redações corrigidas no Essay-BR (80% usadas no treino)" },
   { valor: "86", rotulo: "temas diferentes" },
   { valor: "5", rotulo: "notas, uma por competência" },
   { valor: "0,57", rotulo: "QWK: concordância com os corretores em redações inéditas" },

@@ -19,7 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import Ridge
 
 from calibrate import DEFAULT_CUTS, apply_cuts, fit_cuts, qwk
-from train import TIPOS_DE_TEMA, load_splits
+from train import TIPOS_DE_DIVISAO, TIPOS_DE_TEMA, load_splits
 
 
 def juntar(parte):
@@ -35,10 +35,13 @@ def media_qwk(y, p, cuts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tema-treino", choices=TIPOS_DE_TEMA, default="misto")
+    ap.add_argument("--divisao", choices=TIPOS_DE_DIVISAO, default="aleatoria")
+    ap.add_argument("--saida", default="baseline_tfidf.json")
     args = ap.parse_args()
 
-    treino = load_splits(tema=args.tema_treino)
-    curto, trecho = load_splits(tema="curto"), load_splits(tema="trecho")
+    treino = load_splits(tema=args.tema_treino, divisao=args.divisao)
+    curto = load_splits(tema="curto", divisao=args.divisao)
+    trecho = load_splits(tema="trecho", divisao=args.divisao)
     y_tr = treino["train"][2]
     y_val = curto["val"][2].astype(int)
     y_te = curto["test"][2].astype(int)
@@ -74,6 +77,7 @@ def main():
     resultados = {
         "modelo": "TF-IDF (palavras 1-2 + caracteres 2-5) + Ridge",
         "tema_treino": args.tema_treino,
+        "divisao": args.divisao,
         "alpha": alpha,
         "atributos": int(X_tr.shape[1]),
     }
@@ -87,7 +91,7 @@ def main():
         }
         print(f"teste, tema {nome:6}: QWK arredondamento simples {simples:.4f} | cortes calibrados {calib:.4f} {calib_c}")
 
-    with open("baseline_tfidf.json", "w", encoding="utf-8") as f:
+    with open(args.saida, "w", encoding="utf-8") as f:
         json.dump(resultados, f, indent=2, ensure_ascii=False)
 
 
