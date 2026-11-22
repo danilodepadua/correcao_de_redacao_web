@@ -7,9 +7,16 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from pydantic import BaseModel
 from torch import nn
 from transformers import AutoModel, AutoTokenizer
+
+# Carrega variáveis do arquivo .env (ex.: GEMINI_API_KEY), se existir
+load_dotenv()
 
 
 # Arquitetura do Modelo
@@ -49,9 +56,14 @@ class RewriteResponse(BaseModel):
 # Deve ser o mesmo valor usado no treinamento (MAX_LEN em train.py).
 MAX_LEN = 384
 
+# Configuração do Gemini (usado na reescrita da redação)
+# GEMINI_MODEL pode ser trocado no .env por qualquer modelo disponível para a sua chave
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
+
 # Estado Global
 MODEL = None
 TOKENIZER = None
+GEMINI_CLIENT = None
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -181,21 +193,9 @@ def health_check():
     return {"status": "online", "device": str(DEVICE)}
 
 
-@app.post("/api/v1/avaliar", response_model=EssayResponse)
-def avaliar_redacao(payload: EssayRequest):
-    if len(payload.redacao.split()) < 30:
-        raise HTTPException(
-            status_code=400,
-            detail="A redação é muito curta para ser avaliada (mínimo de 30 palavras).",
-        )
-
-    if MODEL is None or TOKENIZER is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Modelo ainda não foi inicializado. Tente novamente em alguns instantes.",
-        )
-
-    combined_text = f"Tema: {payload.tema} [SEP] Redação: {payload.redacao}"
+def prever_notas(tema: str, redacao: str) -> dict:
+    """Roda o BERTimbau e devolve as notas por competência (múltiplos de 40) e a nota final."""
+    combined_text = f"Tema: {tema} [SEP] Redação: {redacao}"
 
     inputs = TOKENIZER(
         combined_text,
@@ -215,7 +215,7 @@ def avaliar_redacao(payload: EssayRequest):
     clipped = np.clip(raw_scores, 0, 200)
     rounded = (np.round(clipped / 40.0) * 40).astype(int)
 
-    notas = {
+    return {
         "c1_norma_culta": int(rounded[0]),
         "c2_compreensao_tema": int(rounded[1]),
         "c3_projeto_de_texto": int(rounded[2]),
@@ -223,23 +223,147 @@ def avaliar_redacao(payload: EssayRequest):
         "c5_proposta_intervencao": int(rounded[4]),
         "nota_final": int(np.sum(rounded)),
     }
+
+
+def validar_entrada(payload: EssayRequest, acao: str):
+    if len(payload.redacao.split()) < 30:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A redação é muito curta para ser {acao} (mínimo de 30 palavras).",
+        )
+
+    if MODEL is None or TOKENIZER is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Modelo ainda não foi inicializado. Tente novamente em alguns instantes.",
+        )
+
+
+@app.post("/api/v1/avaliar", response_model=EssayResponse)
+def avaliar_redacao(payload: EssayRequest):
+    validar_entrada(payload, "avaliada")
+
+    notas = prever_notas(payload.tema, payload.redacao)
     feedback = gerar_diagnostico(
         payload.redacao, notas, MODEL, TOKENIZER, DEVICE, payload.tema
     )
     return {**notas, "feedback": feedback}
 
+
+# Reescrita com o Gemini
+INSTRUCAO_REESCRITA = """Você é um corretor experiente de redações do ENEM.
+Sua tarefa é reescrever a redação do estudante para que ela alcance nota alta nas
+cinco competências do ENEM, corrigindo os problemas apontados no diagnóstico.
+
+Regras:
+- Mantenha a tese, o ponto de vista e as ideias principais do autor. Melhore o texto,
+  não troque o assunto nem a opinião defendida.
+- Siga o tipo dissertativo-argumentativo: introdução com tese, dois parágrafos de
+  desenvolvimento e conclusão, em 4 ou 5 parágrafos e no máximo 400 palavras.
+- Use a norma culta, sem marcas de oralidade e sem primeira pessoa do singular.
+- Use conectivos variados entre e dentro dos parágrafos e evite repetir palavras.
+- Use apenas repertório sociocultural verdadeiro e amplamente conhecido (leis,
+  obras, pensadores, fatos históricos). Não invente dados, números, pesquisas ou citações.
+- Termine com uma proposta de intervenção completa: agente, ação, meio/modo,
+  finalidade e detalhamento, respeitando os direitos humanos.
+- Não acrescente palavras ou expressões só porque costumam "dar nota": cada
+  mudança deve melhorar de fato o argumento ou a clareza.
+
+Formato da resposta: devolva somente o texto da redação reescrita, sem título,
+sem comentários, sem markdown e com os parágrafos separados por uma linha em branco."""
+
+NOMES_COMPETENCIAS = {
+    "c1_norma_culta": "C1 - Norma culta",
+    "c2_compreensao_tema": "C2 - Compreensão do tema e repertório",
+    "c3_projeto_de_texto": "C3 - Projeto de texto e argumentação",
+    "c4_coesao": "C4 - Coesão",
+    "c5_proposta_intervencao": "C5 - Proposta de intervenção",
+}
+
+
+def obter_cliente_gemini():
+    """Cria o cliente do Gemini na primeira reescrita, a partir de GEMINI_API_KEY."""
+    global GEMINI_CLIENT
+    if GEMINI_CLIENT is None:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Reescrita indisponível: defina GEMINI_API_KEY no arquivo "
+                    "Back-End/.env e reinicie o servidor."
+                ),
+            )
+        GEMINI_CLIENT = genai.Client(api_key=api_key)
+    return GEMINI_CLIENT
+
+
+def montar_prompt_reescrita(tema: str, redacao: str, notas: dict, feedback: List[str]) -> str:
+    linhas_notas = "\n".join(
+        f"- {nome}: {notas[chave]}/200" for chave, nome in NOMES_COMPETENCIAS.items()
+    )
+    linhas_feedback = "\n".join(f"- {f}" for f in feedback)
+    return (
+        f"Tema da redação: {tema or '(não informado)'}\n\n"
+        f"Notas estimadas pela rede neural (nota final {notas['nota_final']}/1000):\n"
+        f"{linhas_notas}\n\n"
+        f"Diagnóstico:\n{linhas_feedback}\n\n"
+        f"Redação original do estudante:\n<<<\n{redacao}\n>>>"
+    )
+
+
 @app.post("/api/v1/reescrever", response_model=RewriteResponse)
 def reescrever_redacao(payload: EssayRequest):
-    if len(payload.redacao.split()) < 30:
-        raise HTTPException(
-            status_code=400,
-            detail="A redação é muito curta para ser reescrita (mínimo de 30 palavras).",
-        )
-    # TODO: integrar modelo gerador de reescrita (ex.: T5/LLM/API)
-    raise HTTPException(
-        status_code=501,
-        detail="Endpoint de reescrita ainda não implementado no back-end.",
+    validar_entrada(payload, "reescrita")
+    cliente = obter_cliente_gemini()
+
+    # As notas e o diagnóstico do BERTimbau guiam o que o Gemini deve corrigir
+    notas = prever_notas(payload.tema, payload.redacao)
+    feedback = gerar_diagnostico(
+        payload.redacao, notas, MODEL, TOKENIZER, DEVICE, payload.tema
     )
+    prompt = montar_prompt_reescrita(payload.tema, payload.redacao, notas, feedback)
+
+    try:
+        resposta = cliente.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=INSTRUCAO_REESCRITA,
+                temperature=0.7,
+            ),
+        )
+    except genai_errors.ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Limite de uso do Gemini atingido. Aguarde um pouco e tente de novo.",
+            )
+        if exc.code == 404:
+            raise HTTPException(
+                status_code=502,
+                detail=f"O modelo '{GEMINI_MODEL}' não existe para esta chave. Ajuste GEMINI_MODEL no .env.",
+            )
+        if exc.code in (400, 401, 403):
+            raise HTTPException(
+                status_code=502,
+                detail=f"O Gemini recusou a requisição ({exc.code}). Confira a GEMINI_API_KEY. Detalhe: {exc.message}",
+            )
+        raise HTTPException(status_code=502, detail=f"Erro do Gemini ({exc.code}): {exc.message}")
+    except genai_errors.APIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"O Gemini está indisponível no momento ({exc.code}). Tente novamente.",
+        )
+
+    texto = (resposta.text or "").strip()
+    if not texto:
+        raise HTTPException(
+            status_code=502,
+            detail="O Gemini não devolveu texto (a resposta pode ter sido bloqueada). Tente novamente.",
+        )
+    return {"redacao_reescrita": texto}
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

@@ -1,0 +1,11 @@
+# PyTorch com CUDA: instale antes, com o índice da sua versão de CUDA, ex.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.6
+transformers>=5.0
+numpy>=2.0
+pandas>=2.2
+scikit-learn>=1.5
+fastapi>=0.115
+uvicorn>=0.30
+google-genai>=3.0
+python-dotenv>=1.0
