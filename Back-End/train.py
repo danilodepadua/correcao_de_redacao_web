@@ -1,6 +1,7 @@
 import ast
 import logging
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,17 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 class EnemEssayEvaluator(nn.Module):
@@ -108,7 +120,7 @@ def evaluate(model, loader, criterion, device):
     targets_arr = np.vstack(all_targets)
 
     y_pred_rounded = post_process_scores(preds_arr)
-    y_true_rounded = (targets_arr * 200.0).astype(int)
+    y_true_rounded = np.round(targets_arr * 200.0).astype(int)
 
     qwk_scores = [
         cohen_kappa_score(
@@ -137,7 +149,7 @@ def main():
     X_themes = df["tema_prompt"].fillna("").astype(str).values
     y = np.array(df["competence"].apply(ast.literal_eval).tolist(), dtype=np.float32)
 
-    # 3. Divisão: 80% Treino, 10% Validação, 10% Teste
+    # Divisão: 80% Treino, 10% Validação, 10% Teste
     X_train_t, X_temp_t, X_train_txt, X_temp_txt, y_train, y_temp = train_test_split(
         X_themes, X_texts, y, test_size=0.20, random_state=42
     )
@@ -167,17 +179,27 @@ def main():
 
     # Treinamento e salvamento do melhor checkpoint
     epochs = 3
+    log_every = 10
     best_val_loss = float("inf")
     os.makedirs("./saved_model", exist_ok=True)
 
+    total_batches = len(train_loader)
+    train_start_time = time.perf_counter()
+    epoch_durations = []
+
     print(
-        f"Iniciando treinamento em: {device} | Treino: {len(train_dataset)} | Val: {len(val_dataset)} | Teste: {len(test_dataset)}"
+        f"Iniciando treinamento em: {device} | Treino: {len(train_dataset)} ({total_batches} batches) | "
+        f"Val: {len(val_dataset)} | Teste: {len(test_dataset)}",
+        flush=True,
     )
 
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
-        for batch in train_loader:
+        epoch_start = time.perf_counter()
+        last_log_time = epoch_start
+
+        for step, batch in enumerate(train_loader, start=1):
             optimizer.zero_grad()
             ids = batch["input_ids"].to(device)
             mask = batch["attention_mask"].to(device)
@@ -189,30 +211,72 @@ def main():
             optimizer.step()
             train_loss += loss.item()
 
+            now = time.perf_counter()
+            if (
+                step % log_every == 0
+                or step == total_batches
+                or (now - last_log_time) >= 30
+            ):
+                last_log_time = now
+                elapsed_epoch = now - epoch_start
+                sec_per_batch = elapsed_epoch / step
+                eta_epoch = sec_per_batch * (total_batches - step)
+                avg_train_so_far = train_loss / step
+
+                print(
+                    f"  [Época {epoch + 1}/{epochs}] Batch {step}/{total_batches} "
+                    f"({100.0 * step / total_batches:.1f}%) | "
+                    f"Loss: {avg_train_so_far:.4f} | "
+                    f"Decorrido: {format_duration(elapsed_epoch)} | "
+                    f"ETA Época: {format_duration(eta_epoch)}",
+                    flush=True,
+                )
+
+        val_start = time.perf_counter()
         avg_val_loss, qwk_scores = evaluate(model, val_loader, criterion, device)
+        val_duration = time.perf_counter() - val_start
+
+        epoch_duration = time.perf_counter() - epoch_start
+        epoch_durations.append(epoch_duration)
+
+        avg_epoch_sec = float(np.mean(epoch_durations))
+        remaining_epochs = epochs - (epoch + 1)
+        eta_total = avg_epoch_sec * remaining_epochs
+        total_elapsed = time.perf_counter() - train_start_time
 
         print(
-            f"Época {epoch + 1}/{epochs} | Train Loss: {train_loss / len(train_loader):.4f} | Val Loss: {avg_val_loss:.4f}"
+            f"Época {epoch + 1}/{epochs} concluída em {format_duration(epoch_duration)} "
+            f"(val: {format_duration(val_duration)}) | "
+            f"Train Loss: {train_loss / total_batches:.4f} | Val Loss: {avg_val_loss:.4f} | "
+            f"Tempo total: {format_duration(total_elapsed)} | "
+            f"ETA restante: {format_duration(eta_total)}",
+            flush=True,
         )
         print(
-            f"QWK Médio Validação: {np.mean(qwk_scores):.4f} (C1-C5: {[round(s, 4) for s in qwk_scores]})"
+            f"QWK Médio Validação: {np.mean(qwk_scores):.4f} "
+            f"(C1-C5: {[round(s, 4) for s in qwk_scores]})",
+            flush=True,
         )
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), "./saved_model/model_weights.pt")
             tokenizer.save_pretrained("./saved_model/tokenizer")
-            print("-> Novo melhor modelo salvo em ./saved_model")
+            print("-> Novo melhor modelo salvo em ./saved_model", flush=True)
 
     # Avaliação do modelo
     model.load_state_dict(
         torch.load("./saved_model/model_weights.pt", map_location=device)
     )
     test_loss, test_qwk = evaluate(model, test_loader, criterion, device)
-    print("\n--- RESULTADO FINAL NO CONJUNTO DE TESTE ---")
-    print(f"Test Loss (MSE): {test_loss:.4f}")
+    total_time = time.perf_counter() - train_start_time
+    print("\n--- RESULTADO FINAL NO CONJUNTO DE TESTE ---", flush=True)
+    print(f"Tempo total de execução: {format_duration(total_time)}", flush=True)
+    print(f"Test Loss (MSE): {test_loss:.4f}", flush=True)
     print(
-        f"QWK Médio Teste: {np.mean(test_qwk):.4f} (C1-C5: {[round(s, 4) for s in test_qwk]})"
+        f"QWK Médio Teste: {np.mean(test_qwk):.4f} "
+        f"(C1-C5: {[round(s, 4) for s in test_qwk]})",
+        flush=True,
     )
 
 

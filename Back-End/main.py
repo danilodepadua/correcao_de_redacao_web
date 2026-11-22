@@ -41,6 +41,9 @@ class EssayResponse(BaseModel):
     nota_final: int
     feedback: List[str]
 
+class RewriteResponse(BaseModel):
+    redacao_reescrita: str
+
 
 # Estado Global
 MODEL = None
@@ -221,6 +224,18 @@ def avaliar_redacao(payload: EssayRequest):
     )
     return {**notas, "feedback": feedback}
 
+@app.post("/api/v1/reescrever", response_model=RewriteResponse)
+def reescrever_redacao(payload: EssayRequest):
+    if len(payload.redacao.split()) < 30:
+        raise HTTPException(
+            status_code=400,
+            detail="A redação é muito curta para ser reescrita (mínimo de 30 palavras).",
+        )
+    # TODO: integrar modelo gerador de reescrita (ex.: T5/LLM/API)
+    raise HTTPException(
+        status_code=501,
+        detail="Endpoint de reescrita ainda não implementado no back-end.",
+    )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
